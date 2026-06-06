@@ -1,10 +1,27 @@
+# Build artifacts
+build/bin
+build/ocr_helper
+*.app
+*.exe
+*.exe~
+
+# Dependencies
+node_modules
+frontend/node_modules
+
+# Frontend build
+frontend/dist
+
 # macOS
 .DS_Store
 .AppleDouble
 .LSOverride
 
-# Root node_modules (misplaced)
-node_modules/
+# TypeScript
+*.tsbuildinfo
+
+# Wails caches
+frontend/package.json.md5
 
 # IDE
 .idea/
@@ -12,6 +29,6 @@ node_modules/
 *.swp
 *.swo
 
-# OS generated
-Thumbs.db
-ehthumbs.db
+# Compiled binary
+desktop-pet
+sion
