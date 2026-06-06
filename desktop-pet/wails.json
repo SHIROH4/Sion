@@ -1,0 +1,20 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "desktop-pet",
+  "outputfilename": "desktop-pet",
+  "frontend:install": "npm install",
+  "frontend:build": "npm run build",
+  "frontend:dev:watcher": "npm run dev",
+  "frontend:dev:serverUrl": "auto",
+  "author": {
+    "name": "白羽shiroha",
+    "email": "153054970+shirohania@users.noreply.github.com"
+  },
+  "width": 400,
+  "height": 500,
+  "frameless": true,
+  "transparent": true,
+  "alwaysOnTop": true,
+  "resizable": false,
+  "fullscreen": false
+}

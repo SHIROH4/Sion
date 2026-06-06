@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8"/>
+    <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+    <title>诗音 · 设置</title>
+    <style>
+        html, body, #root { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto", sans-serif; }
+    </style>
+</head>
+<body>
+<div id="root"></div>
+<div id="fatal-error" style="display:none;padding:40px;font-family:monospace;color:red;white-space:pre-wrap;"></div>
+<script>
+window.onerror = function(msg, url, line, col, err) {
+  var el = document.getElementById('fatal-error')
+  if (el) {
+    el.style.display = 'block'
+    el.textContent = 'Fatal: ' + msg + '\\n' + (err && err.stack ? err.stack : '') + '\\nat ' + url + ':' + line
+  }
+}
+</script>
+<script src="./src/main-settings.tsx" type="module"></script>
+</body>
+</html>
