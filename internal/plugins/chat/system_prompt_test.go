@@ -41,10 +41,19 @@ func TestBuildSystemPrompt_BehaviorRules(t *testing.T) {
 	cfg := &config.GlobalConfig{UserName: "test"}
 	result := BuildSystemPrompt(cfg)
 
-	if !strings.Contains(result, "本手册禁止") {
-		t.Error("should contain behavior rules section")
+	if !strings.Contains(result, "<tool_rules>") {
+		t.Error("should contain tool rules section")
 	}
-	if !strings.Contains(result, "不要") {
-		t.Error("should contain forbidden actions section")
+	if !strings.Contains(result, "web_search") {
+		t.Error("should contain web_search rule")
+	}
+	if !strings.Contains(result, "get_memory") {
+		t.Error("should contain get_memory rule")
+	}
+	if !strings.Contains(result, "Memorize") {
+		t.Error("should contain Memorize rule")
+	}
+	if !strings.Contains(result, "必须调用") {
+		t.Error("should contain mandatory calling language")
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -33,7 +34,12 @@ func cleanBaseURL(raw string) string {
 
 func NewGateway(cfg *config.GlobalConfig) *Gateway {
 	return &Gateway{
-		httpClient: &http.Client{Timeout: 120 * time.Second},
+		httpClient: &http.Client{
+			Timeout: 120 * time.Second,
+			Transport: &http.Transport{
+				DisableKeepAlives: true,
+			},
+		},
 		apiKey:     cfg.LLMAPIKey,
 		baseURL:    cleanBaseURL(cfg.LLMBaseURL),
 		model:      cfg.LLMModel,
@@ -56,7 +62,12 @@ func NewVisionGateway(cfg *config.GlobalConfig) *Gateway {
 		baseURL = cfg.LLMBaseURL
 	}
 	return &Gateway{
-		httpClient: &http.Client{Timeout: 120 * time.Second},
+		httpClient: &http.Client{
+			Timeout: 120 * time.Second,
+			Transport: &http.Transport{
+				DisableKeepAlives: true,
+			},
+		},
 		apiKey:     apiKey,
 		baseURL:    cleanBaseURL(baseURL),
 		model:      model,
@@ -97,10 +108,11 @@ type ToolFunction struct {
 }
 
 type chatRequest struct {
-	Model    string        `json:"model"`
-	Messages []chatMessage `json:"messages"`
-	Stream   bool          `json:"stream"`
-	Tools    []Tool        `json:"tools,omitempty"`
+	Model      string        `json:"model"`
+	Messages   []chatMessage `json:"messages"`
+	Stream     bool          `json:"stream"`
+	Tools      []Tool        `json:"tools,omitempty"`
+	ToolChoice string        `json:"tool_choice,omitempty"`
 }
 
 type streamChunk struct {
@@ -404,6 +416,116 @@ func (g *Gateway) ChatSync(ctx context.Context, messages []plugin.Message) (stri
 	}
 
 	return result.Choices[0].Message.Content, nil
+}
+
+// syncResponseWithTools extends syncResponse with tool_calls support.
+type syncResponseWithTools struct {
+	Choices []struct {
+		Message struct {
+			Content   string            `json:"content"`
+			ToolCalls []plugin.ToolCall `json:"tool_calls"`
+		} `json:"message"`
+	} `json:"choices"`
+}
+
+// ChatSyncWithTools performs synchronous multi-round chat with function calling.
+// onTool is called for each tool invocation; its return value is fed back to the LLM.
+// toolChoice: "auto", "required", "none", or empty for default.
+// Returns the final LLM text response after all tool rounds.
+func (g *Gateway) ChatSyncWithTools(
+	ctx context.Context,
+	messages []plugin.Message,
+	tools []Tool,
+	onTool func(name, argsJSON string) string,
+	maxRounds int,
+	toolChoice string,
+) (string, error) {
+	if maxRounds <= 0 {
+		maxRounds = 3
+	}
+
+	msgs := messages
+	currentTools := tools
+	currentChoice := toolChoice
+	slog.Info("llm: ChatSyncWithTools start", "tools", len(tools), "toolChoice", toolChoice, "maxRounds", maxRounds)
+	for round := 0; round < maxRounds; round++ {
+		reqBody := chatRequest{
+			Model:      g.model,
+			Messages:   toChatMessages(msgs),
+			Stream:     false,
+			Tools:      currentTools,
+			ToolChoice: currentChoice,
+		}
+
+		b, err := json.Marshal(reqBody)
+		if err != nil {
+			return "", fmt.Errorf("marshal request: %w", err)
+		}
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, g.baseURL+"/v1/chat/completions", bytes.NewReader(b))
+		if err != nil {
+			return "", fmt.Errorf("create request: %w", err)
+		}
+		req.Header.Set("Authorization", "Bearer "+g.apiKey)
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := g.httpClient.Do(req)
+		if err != nil {
+			return "", fmt.Errorf("http do: %w", err)
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+			return "", fmt.Errorf("llm api returned %d", resp.StatusCode)
+		}
+
+		var result syncResponseWithTools
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			resp.Body.Close()
+			return "", fmt.Errorf("decode response: %w", err)
+		}
+		resp.Body.Close()
+
+		if len(result.Choices) == 0 {
+			return "", fmt.Errorf("no choices in response")
+		}
+
+		msg := result.Choices[0].Message
+
+		slog.Info("llm: ChatSyncWithTools round", "round", round, "contentLen", len(msg.Content), "toolCalls", len(msg.ToolCalls))
+		// No tool calls → return the content.
+		if len(msg.ToolCalls) == 0 {
+			return msg.Content, nil
+		}
+
+		// Append assistant message with tool_calls.
+		msgs = append(msgs, plugin.Message{
+			Role:      "assistant",
+			Content:   msg.Content,
+			ToolCalls: msg.ToolCalls,
+		})
+
+		// Execute tools and append results.
+		for _, tc := range msg.ToolCalls {
+			slog.Info("llm: executing tool", "name", tc.Function.Name)
+			toolResult := onTool(tc.Function.Name, tc.Function.Arguments)
+			slog.Info("llm: tool executed", "name", tc.Function.Name, "resultLen", len(toolResult))
+			msgs = append(msgs, plugin.Message{
+				Role:       "tool",
+				Content:    toolResult,
+				ToolCallID: tc.ID,
+			})
+		}
+		// When tool_choice="required", after the forced tool call completes,
+		// switch to no tools so the LLM can freely generate a natural response.
+		if currentChoice == "required" {
+			currentTools = nil
+			currentChoice = ""
+		}
+	}
+
+	return "", fmt.Errorf("exceeded max tool rounds (%d)", maxRounds)
 }
 
 // GetEmbedding returns the embedding vector for the given text.

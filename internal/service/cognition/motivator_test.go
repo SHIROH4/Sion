@@ -591,17 +591,17 @@ func TestActionMappings(t *testing.T) {
 		t.Error("non-speak should be false")
 	}
 	// actionToType checks.
-	if actionToType["speak_casual"] != "social" || actionToType["speak_care"] != "encourage" {
+	if ActionByName("speak_casual").OutcomeType != "social" || ActionByName("speak_care").OutcomeType != "encourage" {
 		t.Error("actionToType speak")
 	}
-	if actionToType["care_rest"] != "rest" || actionToType["care_meal"] != "meal" {
+	if ActionByName("care_rest").OutcomeType != "rest" || ActionByName("care_meal").OutcomeType != "meal" {
 		t.Error("actionToType care")
 	}
 	// actionToSource checks.
-	if actionToSource["speak_casual"] != "casual" || actionToSource["speak_care"] != "care" {
+	if ActionByName("speak_casual").Source != "casual" || ActionByName("speak_care").Source != "care" {
 		t.Error("actionToSource speak")
 	}
-	if actionToSource["care_rest"] != "care" || actionToSource["care_meal"] != "care" {
+	if ActionByName("care_rest").Source != "care" || ActionByName("care_meal").Source != "care" {
 		t.Error("actionToSource care")
 	}
 }

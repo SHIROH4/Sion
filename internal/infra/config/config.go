@@ -39,6 +39,7 @@ type GlobalConfig struct {
 	PluginsConfig  map[string]map[string]interface{} `mapstructure:"plugins"         json:"plugins"`
 	WarmStart         WarmStartConfig                   `mapstructure:"warm_start"            json:"warm_start"`
 	BingSearchAPIKey  string                            `mapstructure:"bing_search_api_key"    json:"bing_search_api_key"`
+	BochaAPIKey       string                            `mapstructure:"bocha_api_key"          json:"bocha_api_key"`
 
 	configPath string // resolved config file path, set by Load
 }
@@ -125,6 +126,7 @@ func Save(cfg *GlobalConfig) error {
 	v.Set("user_tech_stack", cfg.UserTechStack)
 	v.Set("embedding_model", cfg.EmbeddingModel)
 	v.Set("bing_search_api_key", cfg.BingSearchAPIKey)
+	v.Set("bocha_api_key", cfg.BochaAPIKey)
 	v.Set("warm_start", cfg.WarmStart)
 	if cfg.PluginsConfig != nil {
 		v.Set("plugins", cfg.PluginsConfig)

@@ -22,6 +22,7 @@ import (
 	"desktop-pet/internal/plugins/chat"
 	"desktop-pet/internal/plugins/memory"
 	"desktop-pet/internal/plugins/qq"
+	"desktop-pet/internal/plugins/search"
 	"desktop-pet/internal/plugins/vision"
 	care "desktop-pet/internal/service/care"
 	"desktop-pet/internal/service/diary"
@@ -223,6 +224,9 @@ func (a *App) domainReady(ctx context.Context) error {
 	visionPlugin.SetLLMSync(llmSync)
 	a.manager.Register(visionPlugin)
 
+	// Search plugin — web search via Bocha API.
+	a.manager.Register(search.NewPlugin(cfg.BochaAPIKey))
+
 	// QQ plugin — LLM and memory injected before registration.
 	qqPlugin := qq.NewPlugin().(*qq.QQPlugin)
 	qqPlugin.SetLLM(llmSync)
@@ -257,6 +261,7 @@ func (a *App) domainReady(ctx context.Context) error {
 	a.manager.Register(memPlugin)
 	a.MemPlugin = memPlugin
 	memPlugin.SetBingSearchAPIKey(cfg.BingSearchAPIKey)
+	memPlugin.SetBochaAPIKey(cfg.BochaAPIKey)
 
 	// Proactive care messages → store for pet window polling.
 	a.manager.EventBus().On("care:action", func(payload any) {

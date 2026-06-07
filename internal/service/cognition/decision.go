@@ -351,8 +351,10 @@ func (e *DecisionEngine) buildFallbackPrompt(ctx domain.DecisionContext, feats *
 		sb.WriteString("\n")
 	}
 
-	sb.WriteString("\n可选: speak(care/casual/knowledge_gap), observe, reflect, analyze_patterns, care_rest, care_meal, care_hydration, care_health, care_encourage, care_social, none\n")
-	sb.WriteString(`输出JSON: {"should_act":true,"action":"speak","source":"casual","reason":"理由","mood":"gentle","priority":0.5}`)
+	// ---- Decision Skill Cards ----
+	// The full action menu with when/how/output guidance.
+	// LLM picks from the same action space as the scorer.
+	sb.WriteString(BuildDecisionSkills())
 	return sb.String()
 }
 

@@ -207,8 +207,8 @@ func TestChatPlugin_ExecuteSingleTool(t *testing.T) {
 	if !called {
 		t.Error("handler should have been called")
 	}
-	if receivedArg != "用户的生日" {
-		t.Errorf("expected arg '用户的生日', got %q", receivedArg)
+	if receivedArg != `{"description": "用户的生日"}` {
+		t.Errorf("expected raw JSON arg, got %q", receivedArg)
 	}
 	if result != "找到了3条相关记忆" {
 		t.Errorf("expected '找到了3条相关记忆', got %q", result)
@@ -241,8 +241,8 @@ func TestChatPlugin_InvokeHandler(t *testing.T) {
 	}
 
 	result := p.invokeHandler(handler, `{"description": "Rust编译错误"}`)
-	if result != "结果: Rust编译错误" {
-		t.Errorf("expected '结果: Rust编译错误', got %q", result)
+	if result != "结果: {\"description\": \"Rust编译错误\"}" {
+		t.Errorf("expected JSON result, got %q", result)
 	}
 }
 

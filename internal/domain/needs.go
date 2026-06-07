@@ -66,6 +66,9 @@ func NeedSatisfactionForAction(action string, outcome OutcomeResult) NeedSatisfa
 		s.Rest = 0.03
 		s.Companionship = -0.10
 
+	case "search":
+		s.Curiosity = -0.35
+
 	case "observe":
 		s.Curiosity = -0.35
 

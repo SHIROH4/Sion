@@ -92,7 +92,7 @@ func (m *NeedModel) Grow(now time.Time, isWorking bool, hour int, timeSinceChat 
 		m.needs.Play = clampNeed(m.needs.Play - 0.04*elapsedHrs)
 	}
 
-	curRate := 0.03
+	curRate := 0.05
 	m.needs.Curiosity = clampNeed(m.needs.Curiosity + curRate*elapsedHrs)
 
 	careRate := 0.03

@@ -2,8 +2,8 @@ package chat
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
+	"log/slog"
 	"sync"
 
 	"desktop-pet/internal/app/plugin"
@@ -154,6 +154,11 @@ func (p *ChatPlugin) handleChat(userMsg string) {
 	tools := p.tools        // snapshot
 	const maxToolRounds = 3 // P1-3: reduced from 5 to prevent runaway tool loops
 
+	slog.Info("chat: handleChat", "tools_count", len(tools))
+	if len(tools) == 0 {
+		slog.Warn("chat: NO tools — LLM will not see function definitions")
+	}
+
 	llmCall := func(messages []plugin.Message, onChunk func(string) error) error {
 		if len(tools) == 0 {
 			return p.gateway.ChatStream(ctx, messages, func(chunk string) error {
@@ -225,6 +230,25 @@ func (p *ChatPlugin) SetFunctionRegistry(reg *plugin.FunctionRegistry) {
 	defer p.mu.Unlock()
 	p.funcReg = reg
 	p.tools = llm.BuildTools(reg.Entries())
+	slog.Info("chat: SetFunctionRegistry", "tool_count", len(p.tools))
+	for _, t := range p.tools {
+		slog.Info("chat: registered tool", "name", t.Function.Name)
+	}
+}
+
+// FunctionTools returns the built OpenAI-compatible tool definitions.
+func (p *ChatPlugin) FunctionTools() []llm.Tool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.tools
+}
+
+// ExecuteFunction runs a registered function by name with JSON args.
+// Used by the HTTP API handler to execute LLM-requested tool calls.
+func (p *ChatPlugin) ExecuteFunction(name, argsJSON string) string {
+	return p.executeSingleTool(plugin.ToolCall{
+		Function: plugin.ToolCallFunction{Name: name, Arguments: argsJSON},
+	})
 }
 
 // EmbeddingFunc returns a function that embeds text using the gateway.
@@ -245,27 +269,15 @@ func (p *ChatPlugin) executeSingleTool(tc plugin.ToolCall) string {
 	return fmt.Sprintf("未找到工具: %s", tc.Function.Name)
 }
 
-// invokeHandler calls the registered handler with the JSON arguments string.
-// Handlers are expected to be func(string) (string, error).
+// invokeHandler calls the registered handler with the raw JSON arguments string.
+// Handlers are expected to be func(string) (string, error) and parse their own args.
 func (p *ChatPlugin) invokeHandler(handler interface{}, argsJSON string) string {
 	h, ok := handler.(func(string) (string, error))
 	if !ok {
 		return "工具调用失败：处理器类型不匹配"
 	}
 
-	// Extract the first string value from the JSON arguments.
-	var args map[string]interface{}
-	var arg string
-	if err := json.Unmarshal([]byte(argsJSON), &args); err == nil {
-		for _, v := range args {
-			if s, ok := v.(string); ok {
-				arg = s
-				break
-			}
-		}
-	}
-
-	result, err := h(arg)
+	result, err := h(argsJSON)
 	if err != nil {
 		return fmt.Sprintf("工具调用出错: %v", err)
 	}

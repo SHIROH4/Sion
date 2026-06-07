@@ -5,7 +5,6 @@ import (
 	"log/slog"
 	"math"
 	"os"
-	"strings"
 	"sync"
 	"time"
 
@@ -84,20 +83,20 @@ func ComputeDrives(feats *domain.QuantifiedFeatures, needs *domain.IntrinsicNeed
 
 	// User context modulation.
 	if feats != nil {
-		// Working → suppress social.
+		// Working -> suppress social.
 		social -= feats.U3_IsWorking * 0.15
-		// High app switching + working = distracted → don't bother.
+		// High app switching + working = distracted -> don't bother.
 		if feats.U3_IsWorking > 0 && feats.U5_AppSwitchNorm > 0.6 {
 			social -= 0.10
 		}
-		// Night time → reduce social (unless care is driving it).
+		// Night time -> reduce social (unless care is driving it).
 		social -= feats.U12_NightTime * 0.15
 	}
 
 	// Relationship gate.
 	social = applyInteractionGate(social, feats)
 
-	// Rejection severity → strong suppression.
+	// Rejection severity -> strong suppression.
 	if feats != nil {
 		social -= feats.R4_RejectionSeverity * 0.35
 	}
@@ -119,13 +118,13 @@ func ComputeDrives(feats *domain.QuantifiedFeatures, needs *domain.IntrinsicNeed
 
 	// User context modulation.
 	if feats != nil {
-		// Continuous work → increase care.
+		// Continuous work -> increase care.
 		care += feats.U4_ContinuousWorkNorm * 0.15
-		// Late night + working → extra care.
+		// Late night + working -> extra care.
 		if feats.U12_NightTime > 0 && feats.U3_IsWorking > 0 {
 			care += 0.10
 		}
-		// Weekend → slightly more care (user might forget self-care).
+		// Weekend -> slightly more care (user might forget self-care).
 		care += feats.U13_IsWeekend * 0.05
 	}
 
@@ -149,9 +148,9 @@ func ComputeDrives(feats *domain.QuantifiedFeatures, needs *domain.IntrinsicNeed
 
 	// User context modulation.
 	if feats != nil {
-		// Learning momentum → boost curiosity.
+		// Learning momentum -> boost curiosity.
 		curious += feats.A13_LearningMomentum * 0.07
-		// Preference diversity → more to explore.
+		// Preference diversity -> more to explore.
 		curious += feats.U16_PrefDiversity * 0.05
 	}
 
@@ -178,19 +177,19 @@ func ComputeDrives(feats *domain.QuantifiedFeatures, needs *domain.IntrinsicNeed
 
 	// User context modulation.
 	if feats != nil {
-		// Recent action → cooldown boost (gradually fades over 30min).
+		// Recent action -> cooldown boost (gradually fades over 30min).
 		quiet += (1.0 - feats.E3_CooldownNorm) * 0.15
-		// Working → prefer quiet.
+		// Working -> prefer quiet.
 		quiet += feats.U3_IsWorking * 0.12
-		// Night time → prefer quiet.
+		// Night time -> prefer quiet.
 		quiet += feats.U12_NightTime * 0.08
-		// Low quota remaining → conserve actions.
+		// Low quota remaining -> conserve actions.
 		if feats.E4_QuotaRemaining < 5 {
 			quiet += 0.10
 		}
 	}
 
-	// Relationship: rejection → be quiet (inverse of social suppression).
+	// Relationship: rejection -> be quiet (inverse of social suppression).
 	if feats != nil {
 		quiet += feats.R4_RejectionSeverity * 0.40
 	}
@@ -217,15 +216,15 @@ func ComputeDrives(feats *domain.QuantifiedFeatures, needs *domain.IntrinsicNeed
 
 	// User context modulation.
 	if feats != nil {
-		// Not working → more room for exploration.
+		// Not working -> more room for exploration.
 		if feats.U3_IsWorking < 0.5 {
 			explore += 0.08
 		}
-		// Reflection due → push explore.
+		// Reflection due -> push explore.
 		explore += feats.E7_ReflectionDue * 0.10
-		// Active inquiries → push explore (wants to learn things to tell user).
+		// Active inquiries -> push explore (wants to learn things to tell user).
 		explore += saturateNorm(float64(feats.A11_ActiveInquiries), 5) * 0.12
-		// Low recent activity → good time for background exploration.
+		// Low recent activity -> good time for background exploration.
 		if feats.E3_MinsSinceAction > 30 {
 			explore += 0.10
 		}
@@ -245,15 +244,15 @@ func ComputeDrives(feats *domain.QuantifiedFeatures, needs *domain.IntrinsicNeed
 // ---- Relationship Gate ----
 
 // interactionGate returns a multiplier [0,1] based on overall acceptance rate.
-// Low acceptance → strong suppression of proactive drives.
+// Low acceptance -> strong suppression of proactive drives.
 func interactionGate(acceptRate float64) float64 {
 	if acceptRate <= 0 {
-		return 1.0 // no data → no suppression
+		return 1.0 // no data -> no suppression
 	}
 	if acceptRate >= 0.5 {
-		return 1.0 // healthy → no suppression
+		return 1.0 // healthy -> no suppression
 	}
-	// 0.0 → 0.5, 0.25 → 0.75, 0.5 → 1.0
+	// 0.0 -> 0.5, 0.25 -> 0.75, 0.5 -> 1.0
 	return 0.5 + acceptRate
 }
 
@@ -275,53 +274,14 @@ type ActionWeight struct {
 	Explore float64 `json:"explore"`
 }
 
-var defaultWeights = map[string]ActionWeight{
-	"speak_casual":     {Social: 0.80, Care: 0.15, Curious: 0.05, Quiet: -0.30, Explore: 0.00},
-	"speak_care":       {Social: 0.40, Care: 0.70, Curious: 0.00, Quiet: -0.20, Explore: 0.00},
-	"speak_inquiry":    {Social: 0.40, Care: 0.00, Curious: 0.60, Quiet: 0.00, Explore: 0.10},
-	"care_rest":        {Social: 0.10, Care: 0.75, Curious: 0.00, Quiet: 0.00, Explore: 0.00},
-	"care_meal":        {Social: 0.10, Care: 0.70, Curious: 0.00, Quiet: 0.00, Explore: 0.00},
-	"care_hydration":   {Social: 0.05, Care: 0.65, Curious: 0.00, Quiet: 0.00, Explore: 0.00},
-	"care_health":      {Social: 0.05, Care: 0.65, Curious: 0.00, Quiet: 0.00, Explore: 0.00},
-	"care_encourage":   {Social: 0.20, Care: 0.55, Curious: 0.00, Quiet: 0.00, Explore: 0.00},
-	"care_social":      {Social: 0.30, Care: 0.40, Curious: 0.00, Quiet: 0.00, Explore: 0.00},
-	"observe":          {Social: 0.10, Care: 0.00, Curious: 0.30, Quiet: 0.00, Explore: 0.60},
-	"reflect":          {Social: 0.00, Care: 0.00, Curious: 0.00, Quiet: 0.20, Explore: 0.75},
-	"analyze_patterns": {Social: 0.00, Care: 0.00, Curious: 0.20, Quiet: 0.00, Explore: 0.65},
-	"none":             {Social: 0.00, Care: 0.00, Curious: 0.00, Quiet: 1.00, Explore: 0.00},
-}
+// defaultWeights are now defined in actions.go — use BuildWeightsMap() at runtime.
 
-// actionToType maps action names to outcome action_type strings for A7 lookup.
-var actionToType = map[string]string{
-	"speak_casual":   "social",
-	"speak_care":     "encourage",
-	"speak_inquiry":  "social",
-	"care_rest":      "rest",
-	"care_meal":      "meal",
-	"care_hydration": "hydration",
-	"care_health":    "health",
-	"care_encourage": "encourage",
-	"care_social":    "social",
-}
+// actionToType moved to actions.go
 
 // actionToSource maps action names to ProactiveSource for R3 lookup.
-var actionToSource = map[string]string{
-	"speak_casual":   "casual",
-	"speak_care":     "care",
-	"speak_inquiry":  "knowledge_gap",
-	"care_rest":      "care",
-	"care_meal":      "care",
-	"care_hydration": "care",
-	"care_health":    "care",
-	"care_encourage": "care",
-	"care_social":    "care",
-}
+// actionToSource moved to actions.go
 
-// isSpeakAction returns true for actions that involve talking to the user.
-func isSpeakAction(action string) bool {
-	return action == "speak_casual" || action == "speak_care" || action == "speak_inquiry" ||
-		strings.HasPrefix(action, "care_")
-}
+// isSpeakAction moved to actions.go
 
 
 // ---- Motivator ----
@@ -333,11 +293,7 @@ type Motivator struct {
 }
 
 func NewMotivator() *Motivator {
-	m := &Motivator{weights: make(map[string]ActionWeight)}
-	for k, v := range defaultWeights {
-		m.weights[k] = v
-	}
-	return m
+	return &Motivator{weights: BuildWeightsMap()}
 }
 
 func (m *Motivator) SetStoragePath(path string) {
@@ -379,10 +335,7 @@ func (m *Motivator) ScoreActions(social, care, curious, quiet, explore float64, 
 	// Hard night gate (22:00-08:00): only rest/health care actions allowed.
 	// All social/casual/inquiry/explore actions are suppressed to avoid disturbing sleep.
 	if feats != nil && feats.U12_NightTime > 0 {
-		nightActions := map[string]bool{
-			"care_rest": true, "care_health": true, "none": true,
-			"reflect": true, "analyze_patterns": true, "observe": true,
-		}
+		nightActions := BuildNightActions()
 		// Filter weights to only night-safe actions.
 		filtered := make(map[string]ActionWeight, len(nightActions))
 		for name := range nightActions {
@@ -398,12 +351,12 @@ func (m *Motivator) ScoreActions(social, care, curious, quiet, explore float64, 
 
 // pickBest selects the highest-scoring action from the given weight set.
 func (m *Motivator) pickBest(social, care, curious, quiet, explore float64, feats *domain.QuantifiedFeatures, suggestions []domain.CareSuggestion, weights map[string]ActionWeight) (action string, score float64, secondScore float64) {
-	// Build a lookup: actionName → suggestion bonus.
+	// Build a lookup: actionName -> suggestion bonus.
 	suggestionBonus := make(map[string]float64, len(suggestions))
 	for _, s := range suggestions {
 		name := s.ActionName()
 		if name != "" {
-			// Priority 1 → +0.25, 2 → +0.20, 3 → +0.15, 4 → +0.10
+			// Priority 1 -> +0.25, 2 -> +0.20, 3 -> +0.15, 4 -> +0.10
 			bonus := 0.30 - float64(s.Priority)*0.05
 			if bonus < 0.05 {
 				bonus = 0.05
@@ -445,15 +398,14 @@ func contextModulator(action string, feats *domain.QuantifiedFeatures) float64 {
 	m := 1.0
 
 	// A7: Historical success rate for this action type.
-	if typ, ok := actionToType[action]; ok {
-		if rate, ok := feats.A7_ActionSuccessRate[typ]; ok && rate >= 0 {
+	if def := ActionByName(action); def != nil && def.OutcomeType != "" {
+		if rate, ok := feats.A7_ActionSuccessRate[def.OutcomeType]; ok && rate >= 0 {
 			m *= 0.4 + rate*0.6 // rate=0→×0.4, rate=1→×1.0
 		}
 	}
-
 	// R3: Acceptance rate for this action's source.
-	if src, ok := actionToSource[action]; ok {
-		if rate, ok := feats.R3_SourceAcceptRate[src]; ok && rate >= 0 {
+	if def := ActionByName(action); def != nil && def.Source != "" {
+		if rate, ok := feats.R3_SourceAcceptRate[def.Source]; ok && rate >= 0 {
 			m *= 0.5 + rate*0.5
 		}
 	}
@@ -475,15 +427,15 @@ func contextModulator(action string, feats *domain.QuantifiedFeatures) float64 {
 	if action == "speak_inquiry" && feats.R6_DepthTrend > 0.2 {
 		m *= 1.0 + feats.R6_DepthTrend*0.3 // up to ×1.3 for deepening convos
 	}
-	// Active inquiries/curiosity → boost speak_inquiry (has something to talk about).
+	// Active inquiries/curiosity -> boost speak_inquiry (has something to talk about).
 	if action == "speak_inquiry" && feats.A11_ActiveInquiries > 0 {
 		m *= 1.0 + saturateNorm(float64(feats.A11_ActiveInquiries), 3)*0.3
 	}
 
-	// U7: Message trend negative → user disengaging → reduce social speak.
+	// U7: Message trend negative -> user disengaging -> reduce social speak.
 	// Care actions are need-driven, exempt from social disengagement penalty.
 	if (action == "speak_casual" || action == "speak_inquiry") && feats.U7_LengthTrend < -0.3 {
-		m *= 1.0 + feats.U7_LengthTrend*0.4 // trend=-1→×0.6
+		m *= 1.0 + feats.U7_LengthTrend*0.4 // trend=-1->×0.6
 	}
 
 	// Clamp to reasonable range.

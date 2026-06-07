@@ -100,7 +100,7 @@ func TestBuildFallbackPrompt_WithFullContext(t *testing.T) {
 		"从经验中学到的策略",
 		"傲娇语气催睡",
 		"最近行动结果",
-		"可选: speak",
+		"可选动作:",
 		"输出JSON",
 	}
 	for _, check := range checks {
@@ -350,7 +350,7 @@ func TestDecide_LLMFallback_FullContext(t *testing.T) {
 		{"care/rest✓", "Outcome 1"},
 		{"casual/social✗", "Outcome -1"},
 		// Footer
-		{"可选: speak", "Action options"},
+		{"可选动作:", "Action options"},
 		{"输出JSON", "JSON instruction"},
 	}
 

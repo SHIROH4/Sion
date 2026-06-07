@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -21,8 +22,15 @@ func (p *MemoryPlugin) Search(keyword string) (string, error) {
 }
 
 // Memorize saves a permanent memory fact.
-func (p *MemoryPlugin) Memorize(content string) (string, error) {
-	return svcmemory.MemorizeFact(p.store, content)
+// Accepts raw JSON args like {"content": "..."} and parses them.
+func (p *MemoryPlugin) Memorize(argsJSON string) (string, error) {
+	var args struct {
+		Content string `json:"content"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &args); err == nil && args.Content != "" {
+		return svcmemory.MemorizeFact(p.store, args.Content)
+	}
+	return svcmemory.MemorizeFact(p.store, argsJSON)
 }
 
 // Recall retrieves the full original messages behind a compressed archive.
@@ -100,8 +108,15 @@ func (p *MemoryPlugin) RegisterFunctions(reg *plugin.FunctionRegistry) {
 }
 
 // GetMemory is the LLM-callable memory retrieval function.
-func (p *MemoryPlugin) GetMemory(description string) (string, error) {
-	description = strings.TrimSpace(description)
+// Accepts raw JSON args like {"description": "..."} and parses them.
+func (p *MemoryPlugin) GetMemory(argsJSON string) (string, error) {
+	var args struct {
+		Description string `json:"description"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &args); err == nil && args.Description != "" {
+		argsJSON = args.Description // extract the real query
+	}
+	description := strings.TrimSpace(argsJSON)
 	if description == "" {
 		return "请提供要检索的内容描述", nil
 	}

@@ -126,6 +126,7 @@ type MemoryPlugin struct {
 	diaryCountToday     int
 	lastSystem2Tick     time.Time
 	decisionWarmupDone  bool   // first tick computes features but skips action
+	bochaAPIKey         string // Bocha Web Search API key (optional, preferred)
 	bingSearchAPIKey    string // Bing Web Search API key (optional)
 	conversationSummary string              // compressed summary of current conversation
 	rejectedActions     map[string]time.Time // action→when rejected, cleared on idle
@@ -566,6 +567,7 @@ func (p *MemoryPlugin) Start() error {
 	})
 	p.toolRegistry.Register(&tools.SearchTool{
 		BingAPIKey: p.bingSearchAPIKey,
+			BochaAPIKey: p.bochaAPIKey,
 		OnResults: func(query string, results []tools.SearchResult) string {
 			return p.extractFactsFromSearch(query, results)
 		},
@@ -1128,16 +1130,61 @@ func (p *MemoryPlugin) runSystem2Decision() {
 			}
 		}
 	}
-	switch {
-	case dec.Action == "speak" || dec.Action == "browse" || dec.Action == "search" || dec.Action == "reflect" ||
-		dec.Action == "care_rest" || dec.Action == "care_meal" || dec.Action == "care_hydration" ||
-		dec.Action == "care_health" || dec.Action == "care_encourage" || dec.Action == "care_social":
-		// Speak and care actions all go through the SpeakTool.
-		toolName := dec.Action
-		if strings.HasPrefix(dec.Action, "care_") {
-			toolName = "speak" // care_* actions use the speak tool
-		}
-		if p.toolRegistry != nil {
+		// Unified dispatch via ActionDef — scorer and LLM share the same action space.
+		def := cognition.ActionByName(dec.Action)
+		switch {
+		case def == nil:
+			if p.pctx.Logger != nil {
+				p.pctx.Logger.Warn("memory: unknown action", "action", dec.Action)
+			}
+		case def.NeedsTool:
+			// Tool-based actions: search, observe, reflect, analyze_patterns, browse.
+			switch def.Name {
+			case "analyze_patterns":
+				// Pattern analysis uses its own pipeline, not the tool registry.
+				if p.patternAnalyzer != nil {
+					api.StatusBusInstance().EmitStart("pattern", "行为模式分析...")
+					patterns, err := p.patternAnalyzer.Analyze()
+					if err != nil {
+						api.StatusBusInstance().EmitFail("pattern", err.Error())
+					} else {
+						api.StatusBusInstance().EmitOK("pattern", fmt.Sprintf("发现 %d 个行为模式", len(patterns)))
+					}
+				}
+			case "observe":
+				// Screen observation runs asynchronously.
+				go p.triggerVisualAnalysis()
+			default:
+				// search, reflect, browse — use the tool registry.
+				if p.toolRegistry != nil {
+					toolInput := dec.ToolInput
+					if toolInput == "" {
+						toolInput = dec.Reason
+					}
+					api.StatusBusInstance().EmitStart(dec.Action, fmt.Sprintf("%s: %s...",
+						def.DisplayName, toolInput[:min(len(toolInput), 40)]))
+					result, err := p.toolRegistry.Execute(context.Background(), def.ToolName, toolInput)
+					if err != nil {
+						api.StatusBusInstance().EmitFail(dec.Action, err.Error())
+						if p.pctx.Logger != nil {
+							p.pctx.Logger.Warn("memory: tool execution failed", "tool", def.ToolName, "err", err)
+						}
+					} else if !result.Success {
+						api.StatusBusInstance().EmitFail(dec.Action, result.Error)
+					} else {
+						api.StatusBusInstance().EmitOK(dec.Action, result.Output[:min(len(result.Output), 80)])
+					}
+				}
+			}
+			if p.featureComputer != nil {
+				p.featureComputer.NoteAction()
+			}
+			if p.needModel != nil {
+				p.needModel.Satisfy(dec.Action, domain.OutcomeIgnored)
+			}
+		case def.Category == "social" || def.Category == "care":
+			// Speak-based actions: talk to the user.
+			toolName := "speak"
 			toolInput := dec.Source
 			if dec.Reason != "" {
 				toolInput += "|" + dec.Reason + "|" + dec.Mood
@@ -1149,40 +1196,13 @@ func (p *MemoryPlugin) runSystem2Decision() {
 			if !result.Success && p.pctx.Logger != nil {
 				p.pctx.Logger.Warn("memory: tool returned failure", "tool", toolName, "error", result.Error)
 			}
-		} else if p.pctx.Logger != nil {
-			p.pctx.Logger.Warn("memory: toolRegistry is nil — cannot execute action", "action", dec.Action)
-		}
-		if p.featureComputer != nil {
-			p.featureComputer.NoteAction()
-		}
-		if p.needModel != nil {
-			p.needModel.Satisfy(dec.Action, domain.OutcomeIgnored)
-		}
-	case dec.Action == "observe":
-		go p.triggerVisualAnalysis()
-		if p.featureComputer != nil {
-			p.featureComputer.NoteAction()
-		}
-		if p.needModel != nil {
-			p.needModel.Satisfy(dec.Action, domain.OutcomeIgnored)
-		}
-	case dec.Action == "analyze_patterns":
-		if p.patternAnalyzer != nil {
-			api.StatusBusInstance().EmitStart("pattern", "行为模式分析...")
-			patterns, err := p.patternAnalyzer.Analyze()
-			if err != nil {
-				api.StatusBusInstance().EmitFail("pattern", err.Error())
-			} else {
-				api.StatusBusInstance().EmitOK("pattern", fmt.Sprintf("发现 %d 个行为模式", len(patterns)))
+			if p.featureComputer != nil {
+				p.featureComputer.NoteAction()
+			}
+			if p.needModel != nil {
+				p.needModel.Satisfy(dec.Action, domain.OutcomeIgnored)
 			}
 		}
-		if p.featureComputer != nil {
-			p.featureComputer.NoteAction()
-		}
-		if p.needModel != nil {
-			p.needModel.Satisfy(dec.Action, domain.OutcomeIgnored)
-		}
-	}
 
 	// Note the decision tick for E5 (cooldown tracking).
 	if p.featureComputer != nil {
@@ -1317,54 +1337,159 @@ func recoverGuard(name string) {
 	}
 }
 
-// extractFactsFromSearch uses the LLM to answer a search query and extract knowledge facts.
-// Falls back to asking the LLM directly when web search results are unavailable.
+// extractFactsFromSearch uses the LLM to extract and judge facts from search results.
+// Quality scoring: reliability (source authority), relevance (to query), novelty (not already known).
+// Only facts scoring ≥0.5 are saved to the memory system.
 func (p *MemoryPlugin) extractFactsFromSearch(query string, results []tools.SearchResult) string {
 	if p.rawLLM == nil {
 		return fmt.Sprintf("search: %q → LLM not available", query)
 	}
 
-	// If web search returned results, extract facts from them.
-	// Otherwise, ask the LLM directly (LLM-as-search).
-	var prompt string
+	// Collect known facts for novelty check (avoid re-learning the same thing).
+	knownSample := ""
+	if p.store != nil {
+		facts := p.store.ListActiveFacts(0)
+		var parts []string
+		for i, f := range facts {
+			if i >= 10 {
+				break
+			}
+			parts = append(parts, f.Content)
+		}
+		knownSample = strings.Join(parts, "; ")
+	}
+
 	if len(results) > 0 {
 		var sb strings.Builder
 		for i, r := range results {
-			if i >= 5 { break }
-			sb.WriteString(fmt.Sprintf("%d. %s\n   %s\n", i+1, r.Title, r.Snippet))
+			if i >= 5 {
+				break
+			}
+			sb.WriteString(fmt.Sprintf("%d. %s\n   %s\n   URL: %s\n", i+1, r.Title, r.Snippet, r.URL))
 		}
-		prompt = fmt.Sprintf(
-			"从以下搜索结果中提取1-2个有趣的事实，用中文简要总结。只输出事实，不要加前缀。\n查询: %s\n\n%s",
-			query, sb.String(),
-		)
-	} else {
-		prompt = fmt.Sprintf(
-			"请用1-2句中文简要回答以下问题，提供有趣且准确的信息。只输出事实，不要加前缀。\n问题: %s",
-			query,
-		)
+		prompt := fmt.Sprintf(`从以下搜索结果中提取知识，并进行质量评判。
+
+查询: %s
+
+搜索结果:
+%s
+
+已知事实（避免重复学习）: %s
+
+请用JSON格式回复：
+{
+  "facts": [{"content": "提取的事实", "source_url": "来源URL"}],
+  "quality": {
+    "reliability": 0.8,   // 来源可信度 (0-1): 官方文档>技术博客>论坛
+    "relevance": 0.9,      // 与查询相关度 (0-1)
+    "novelty": 0.7,        // 新颖性 (0-1): 与已知事实的差异程度
+    "overall": 0.8         // 综合评分 (0-1): 0.5以上才值得记忆
+  }
+}
+只输出JSON。`, query, sb.String(), knownSample)
+
+		answer, err := p.rawLLM([]plugin.Message{{Role: "user", Content: prompt}})
+		if err != nil || answer == "" {
+			return fmt.Sprintf("search: %q → no answer", query)
+		}
+		return p.saveJudgedFacts(query, answer, results)
 	}
+
+	// No search results — LLM answers directly, but mark as lower confidence.
+	prompt := fmt.Sprintf(`请用1-2句中文回答以下问题。同时进行自我评判。
+
+问题: %s
+
+用JSON格式回复：
+{
+  "facts": [{"content": "回答内容", "source_url": ""}],
+  "quality": {"reliability": 0.4, "relevance": 0.8, "novelty": 0.5, "overall": 0.4}
+}
+只输出JSON。`, query)
 
 	answer, err := p.rawLLM([]plugin.Message{{Role: "user", Content: prompt}})
 	if err != nil || answer == "" {
 		return fmt.Sprintf("search: %q → no answer", query)
 	}
-	answer = strings.TrimSpace(answer)
+	return p.saveJudgedFacts(query, answer, nil)
+}
 
-	// Save as a fact + create a curiosity inquiry for future reference.
-	if p.store != nil {
-		_ = p.store.SaveFact(answer, "web_search")
+// saveJudgedFacts parses the LLM's JSON output and saves high-quality facts.
+func (p *MemoryPlugin) saveJudgedFacts(query, jsonResp string, results []tools.SearchResult) string {
+	raw := CleanJSON(jsonResp)
+
+	var output struct {
+		Facts   []struct {
+			Content   string `json:"content"`
+			SourceURL string `json:"source_url"`
+		} `json:"facts"`
+		Quality struct {
+			Reliability float64 `json:"reliability"`
+			Relevance   float64 `json:"relevance"`
+			Novelty     float64 `json:"novelty"`
+			Overall     float64 `json:"overall"`
+		} `json:"quality"`
 	}
-	if p.cogRepo != nil {
-		inquiry := domain.CuriosityItem{
-			ItemType: domain.CuriosityInquiry, Content: answer,
-			Confidence: 0.5, Priority: 0.5, Status: "active", Source: "web_search",
+	if err := json.Unmarshal([]byte(raw), &output); err != nil {
+		return fmt.Sprintf("search: %q → parse error: %v", query, err)
+	}
+
+	// Fallback: if no facts parsed, treat the raw response as a fact.
+	if len(output.Facts) == 0 && output.Quality.Overall <= 0 {
+		output.Facts = []struct {
+			Content   string `json:"content"`
+			SourceURL string `json:"source_url"`
+		}{{Content: raw}}
+		output.Quality.Overall = 0.4
+	}
+	if output.Quality.Overall <= 0 {
+		output.Quality.Overall = (output.Quality.Reliability*0.3 +
+			output.Quality.Relevance*0.3 + output.Quality.Novelty*0.2 + 0.5*0.2)
+	}
+
+	saved := 0
+	for _, f := range output.Facts {
+		if strings.TrimSpace(f.Content) == "" {
+			continue
 		}
-		_, _ = p.cogRepo.Save(inquiry)
+		content := strings.TrimSpace(f.Content)
+
+		// Quality gate: only save facts scoring ≥ 0.5 overall.
+		if output.Quality.Overall >= 0.5 {
+			if p.store != nil {
+				_ = p.store.SaveFact(content, "web_search")
+			}
+			if p.cogRepo != nil {
+				evidence := f.SourceURL
+				if evidence == "" && len(results) > 0 {
+					evidence = results[0].URL
+				}
+				inquiry := domain.CuriosityItem{
+					ItemType: domain.CuriosityInquiry, Content: content,
+					Confidence: output.Quality.Overall, Priority: output.Quality.Overall,
+					Status: "active", Source: "web_search", Evidence: evidence,
+				}
+				_, _ = p.cogRepo.Save(inquiry)
+			}
+			saved++
+		}
 	}
+
 	if p.pctx.Logger != nil {
-		p.pctx.Logger.Info("memory: search fact extracted", "query", query[:min(len(query), 40)], "fact", answer[:min(len(answer), 80)])
+		p.pctx.Logger.Info("memory: search facts judged",
+			"query", query[:min(len(query), 40)],
+			"extracted", len(output.Facts),
+			"saved", saved,
+			"score", fmt.Sprintf("%.2f", output.Quality.Overall),
+		)
 	}
-	return fmt.Sprintf("search: %q → %s", query, answer)
+
+	summary := fmt.Sprintf("search: %q → %d facts (score:%.2f, saved:%d)",
+		query, len(output.Facts), output.Quality.Overall, saved)
+	for _, f := range output.Facts {
+		summary += "\n  - " + f.Content
+	}
+	return summary
 }
 
 // extractFactsFromBrowse uses the LLM to extract knowledge from a web page.
@@ -1440,6 +1565,8 @@ func (p *MemoryPlugin) buildPersonaSummary() string {
 
 // SetBingSearchAPIKey configures the Bing Web Search API key.
 func (p *MemoryPlugin) SetBingSearchAPIKey(key string) { p.bingSearchAPIKey = key }
+
+func (p *MemoryPlugin) SetBochaAPIKey(key string) { p.bochaAPIKey = key }
 
 // ListStrategies returns all active strategy principles.
 func (p *MemoryPlugin) ListStrategies() []domain.StrategyPrinciple {
