@@ -22,6 +22,8 @@
 | **自学习** | 策略原则提取、行为模式挖掘、驱力评分自适应 | 日反思 + RL 权重更新 |
 | **截图即问** | macOS Vision OCR + 多模态 LLM 分析 | 原生 Vision Framework |
 | **屏幕感知** | 定期 OCR 屏幕、识别工作/休闲状态 | 自适应间隔 |
+| **联网搜索** | 博查 API 接入，对话中搜索最新技术信息 | 意图检测 + 强制工具调用 |
+| **工具调用** | 三层架构：代码路由 → 工具执行 → LLM 话术 | tool_choice 强制 + 2 轮回复 |
 
 ---
 
@@ -50,6 +52,8 @@
 **决策流**: 量化特征(46维) → 驱力计算(5维) → 行动评分 → fast path / LLM fallback
 
 **记忆流**: 对话 → SessionBuffer(L0) → 日记+情绪(L1) → 事实+向量(L2) → 策略原则(L3)
+
+**工具调用**: 意图检测 (Go 代码) → 工具过滤 (Layer 1 记忆常驻 + Layer 2 搜索按需) → tool_choice 强制调用 → LLM 自然回复
 
 ---
 
@@ -104,6 +108,8 @@ wails dev
 | `user_name` | 称呼 | `主人` |
 | `user_tech_stack` | 技术栈 | `[]` |
 | `warm_start` | 初始人格 + 已知事实 | 可选 |
+| `bocha_api_key` | 博查搜索 API Key | (可选，用于联网搜索) |
+| `bing_search_api_key` | Bing 搜索 API Key | (可选，博查优先) |
 
 ### 环境变量
 
@@ -173,7 +179,8 @@ desktop-pet/
 │   │
 │   ├── plugins/               # 插件
 │   │   ├── memory/            #   核心插件 (接线所有服务)
-│   │   ├── chat/              #   对话插件 (LLM 网关+编排)
+│   │   ├── chat/              #   对话插件 (LLM 网关+编排+意图路由)
+│   │   ├── search/            #   联网搜索插件 (博查 API, v0.2)
 │   │   ├── vision/            #   截图分析
 │   │   └── qq/                #   QQ Bot (WebSocket+重连)
 │   │
