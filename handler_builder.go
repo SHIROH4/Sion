@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
-	"strings"
 	"time"
 
 	"desktop-pet/internal/api"
@@ -154,35 +153,14 @@ func buildHandlers(app *SettingsApp) *api.Handlers {
 					return "工具不可用: " + name
 				}
 
-				// === Layered tool routing ===
-				// Layer 1 (always-on): get_memory + Memorize — every turn.
-				// Layer 2 (on-demand): web_search — only when search intent detected.
-				baseTools := filterToolsByNames(allTools, "get_memory", "Memorize")
-				hasSearch := detectSearchIntent(text)
-
-				slog.Info("chat: route", "search", hasSearch, "baseTools", len(baseTools),
-					"msg", text[:min(len(text), 40)])
+				// Pass all tools to the LLM with tool_choice="auto".
+				// The LLM decides when to call which tool based on context.
+				slog.Info("chat: tools", "count", len(allTools), "msg", text[:min(len(text), 40)])
 
 				ctx, err := app.petApp.manager.ProcessChat(text, func(msgs []plugin.Message, onChunk func(string) error) error {
-					if hasSearch {
-						// Search intent: add web_search + force tool call.
-						searchTool := filterToolsByNames(allTools, "web_search")
-						all := append(baseTools, searchTool...)
-						// tool_choice="required" forces DeepSeek to call a tool.
-						// After tool execution, the gateway switches to no-tools for round 1.
+					if len(allTools) > 0 {
 						result, e := llmGW.ChatSyncWithTools(
-							context.Background(), msgs, all, execTool, 2, "required",
-						)
-						if e != nil {
-							return e
-						}
-						return onChunk(result)
-					}
-					// No search: simple chat. Memory tools are always available
-					// in the tool list if DeepSeek decides to use them.
-					if len(baseTools) > 0 {
-						result, e := llmGW.ChatSyncWithTools(
-							context.Background(), msgs, baseTools, execTool, 1, "auto",
+							context.Background(), msgs, allTools, execTool, 3, "auto",
 						)
 						if e != nil {
 							return e
@@ -441,45 +419,3 @@ func buildHandlers(app *SettingsApp) *api.Handlers {
 }
 
 // detectChatIntent classifies a user message into: search, recall, memorize, chat.
-func detectSearchIntent(msg string) bool {
-	msg = strings.ToLower(msg)
-	isQuestion := strings.Contains(msg, "?") || strings.Contains(msg, "？") ||
-		strings.Contains(msg, "什么") || strings.Contains(msg, "哪") || strings.Contains(msg, "吗") ||
-		strings.Contains(msg, "谁") || strings.Contains(msg, "怎么") || strings.Contains(msg, "如何")
-
-	score := 0
-	for _, kw := range []string{"帮我查", "帮我搜", "搜索一下", "查一下", "搜一下", "百度一下", "google"} {
-		if strings.Contains(msg, kw) { score += 3 }
-	}
-	for _, kw := range []string{"搜索", "查询", "什么是", "怎么用", "最新", "最近", "教程", "文档"} {
-		if strings.Contains(msg, kw) { score += 2 }
-	}
-	for _, kw := range []string{"查", "搜", "新闻", "如何"} {
-		if strings.Contains(msg, kw) { score += 1 }
-	}
-	// Knowledge questions strongly suggest search.
-	if isQuestion {
-		for _, kw := range []string{"什么是", "怎么用", "如何", "最新", "最近", "教程"} {
-			if strings.Contains(msg, kw) { score += 1 }
-		}
-	}
-	// Negative signals.
-	for _, neg := range []string{"不查", "别查", "不要搜", "不想查", "不用搜"} {
-		if strings.Contains(msg, neg) { score = 0 }
-	}
-	return score >= 2
-}
-
-// filterToolsByNames returns tools whose Function.Name matches any of the given names.
-func filterToolsByNames(tools []infrallm.Tool, names ...string) []infrallm.Tool {
-	want := make(map[string]bool, len(names))
-	for _, n := range names { want[n] = true }
-	var filtered []infrallm.Tool
-	for _, t := range tools {
-		if want[t.Function.Name] {
-			filtered = append(filtered, t)
-		}
-	}
-	return filtered
-}
-
