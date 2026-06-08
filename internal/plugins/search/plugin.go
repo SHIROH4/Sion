@@ -53,12 +53,12 @@ func (p *SearchPlugin) IsRunning() bool { return true }
 func (p *SearchPlugin) RegisterFunctions(reg *plugin.FunctionRegistry) {
 	reg.RegisterWithParams(
 		"web_search",
-		`搜索互联网获取最新的实时信息。在以下情况下调用：
-- 用户明确要求搜索、查找、查询最新信息
-- 问题涉及实时信息（"今天"、"最新"、"最近"、"现在"）
-- 具体技术问题你不确定（版本号、API变更、新特性、库的最新用法）
-- 需要验证的事实性问题
-不应在以下情况调用：常识问题、纯逻辑推理、数学计算、闲聊、你确定知道的内容`,
+		"Search the web for real-time information. "+
+			"Call when the user explicitly asks to search/lookup/query, "+
+			"or asks about latest/recent/current facts you are unsure about "+
+			"(e.g. version numbers, API changes, new features). "+
+			"Do NOT call for: casual chat, common knowledge, math, logic puzzles, "+
+			"or things you already know from training data.",
 		p.handleSearch,
 		map[string]any{
 			"type": "object",

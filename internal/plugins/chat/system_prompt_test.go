@@ -41,19 +41,22 @@ func TestBuildSystemPrompt_BehaviorRules(t *testing.T) {
 	cfg := &config.GlobalConfig{UserName: "test"}
 	result := BuildSystemPrompt(cfg)
 
-	if !strings.Contains(result, "<tool_rules>") {
-		t.Error("should contain tool rules section")
+	// Tools are now passed via API tools field, not in system prompt.
+	// System prompt should only contain identity, user, time, self_and_emotion.
+	if !strings.Contains(result, "<identity>") {
+		t.Error("should contain identity section")
 	}
-	if !strings.Contains(result, "web_search") {
-		t.Error("should contain web_search rule")
+	if !strings.Contains(result, "<user>") {
+		t.Error("should contain user section")
 	}
-	if !strings.Contains(result, "get_memory") {
-		t.Error("should contain get_memory rule")
+	if !strings.Contains(result, "<time>") {
+		t.Error("should contain time section")
 	}
-	if !strings.Contains(result, "Memorize") {
-		t.Error("should contain Memorize rule")
+	if !strings.Contains(result, "<self_and_emotion>") {
+		t.Error("should contain self_and_emotion section")
 	}
-	if !strings.Contains(result, "必须调用") {
-		t.Error("should contain mandatory calling language")
+	// Verify tool_rules is NOT in the prompt.
+	if strings.Contains(result, "<tool_rules>") {
+		t.Error("tool_rules should NOT be in system prompt — tools are via API field")
 	}
 }

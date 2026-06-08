@@ -78,7 +78,10 @@ func (p *MemoryPlugin) UpdateSelfProfile(llmSync func([]plugin.Message) (string,
 // RegisterFunctions registers AI-callable memory functions.
 func (p *MemoryPlugin) RegisterFunctions(reg *plugin.FunctionRegistry) {
 	reg.RegisterWithParams("get_memory",
-		"在长期记忆库中搜索相关记忆。当需要回忆过去的对话、事件或用户信息时调用。",
+		"Search long-term memory for past conversations, events, or user info. "+
+			"Call when the user references past discussions (\"之前\"/\"上次\"/\"还记得\"), "+
+			"asks you to recall something, or tests your memory. "+
+			"Do NOT call for general knowledge questions — use web_search for those.",
 		p.GetMemory,
 		map[string]any{
 			"type": "object",
@@ -92,7 +95,10 @@ func (p *MemoryPlugin) RegisterFunctions(reg *plugin.FunctionRegistry) {
 		},
 	)
 	reg.RegisterWithParams("Memorize",
-		"永久记住一段重要信息。用于保存用户的关键个人信息、约定或重要事件。",
+		"Permanently store important user information. "+
+			"Call when the user explicitly shares facts about themselves "+
+			"(birthday, name, preferences, plans, habits). "+
+			"Do NOT call for casual statements or opinions.",
 		p.Memorize,
 		map[string]any{
 			"type": "object",
