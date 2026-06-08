@@ -1,5 +1,35 @@
 # 更新日志
 
+## v0.3.0 (2026-06-08) — Vue 3 + Naive UI Frontend Overhaul, L0 Persistence
+
+### 前端架构升级
+
+- **React 18 → Vue 3.4**: 框架全面迁移，30+ 组件重写为 Vue SFC，响应式系统从 Pull 模式切换为 Proxy Push 模式
+- **Naive UI 设计系统**: 引入 Naive UI 组件库，统一设计语言
+  - `n-card` 卡片容器，带 hover 阴影效果
+  - `n-tabs` 分段 / 条形标签页切换
+  - `n-progress` 彩色进度条展示驱力/需求/情绪
+  - `n-menu` + `n-layout-sider` 淡蓝侧边栏导航
+  - `n-form` + `n-input` 表单控件
+  - `n-timeline` 日记时间线
+  - `n-tag` / `n-switch` / `n-slider` 等交互控件
+- **状态管理**: Zustand → Pinia (petStore + settingsStore)
+- **图标库**: Unicode emoji → @vicons/ionicons5 SVG 图标
+- **侧边栏配色**: 深色 → 淡蓝 + 白色内容区
+- **聊天面板**: 经典三区布局（固定标题栏 + 可滚消息区 + 固定输入框）
+- **主题定制**: `NConfigProvider` 全局主题
+
+### Go 后端改进
+
+- **L0 工作记忆持久化**: SessionBuffer 启动时从 `chat_history` 恢复最近 20 条消息
+
+### 移除
+
+- 所有 React 依赖 (react, react-dom, zustand, @vitejs/plugin-react 等)
+- 手写 UI 组件 (StatCard, RadarChart, ParamSlider, ParamToggle, ParamNumber 等)
+
+---
+
 ## v0.2.0 (2026-06-08) — Web Search + Tool Calling + Decision Refactoring
 
 ### 新功能
@@ -31,37 +61,6 @@
 - `actionToType`/`actionToSource` 合并为 `ActionDef` 字段，消除并行映射
 - `analyze_patterns` 的 `NeedsTool` 修正为 `false`，与 lifecycle.go 的特殊处理一致
 - `AllActions()` 缓存 (sync.Once)
-
----
-
-## v0.3.0 (2026-06-08) — Vue 3 + Naive UI Frontend Overhaul, L0 Persistence
-
-### 前端架构升级
-
-- **React 18 → Vue 3.4**: 框架全面迁移，30+ 组件重写为 Vue SFC，响应式系统从 Pull 模式切换为 Proxy Push 模式
-- **Naive UI 设计系统**: 引入 Naive UI 组件库，统一设计语言
-  - `n-card` 卡片容器，带 hover 阴影效果
-  - `n-tabs` 分段 / 条形标签页切换
-  - `n-progress` 彩色进度条展示驱力/需求/情绪
-  - `n-menu` + `n-layout-sider` 淡蓝侧边栏导航
-  - `n-form` + `n-input` 表单控件
-  - `n-timeline` 日记时间线
-  - `n-tag` / `n-switch` / `n-slider` 等交互控件
-- **状态管理**: Zustand → Pinia (petStore + settingsStore)
-- **图标库**: Unicode emoji → @vicons/ionicons5 SVG 图标
-- **侧边栏配色**: 深色 `#1a1c2e` → 淡蓝 `#e8f4fd` + 白色内容区
-- **聊天面板**: 重构为经典三区布局（固定标题栏 + 可滚消息区 + 固定输入框），输入框不再随消息滚动
-- **主题定制**: `NConfigProvider` 全局主题，primaryColor `#4f6ef7`
-- **Toast 通知**: 手写 toast → `useMessage()` API
-
-### Go 后端改进
-
-- **L0 工作记忆持久化**: SessionBuffer 启动时从 `chat_history` 表加载最近 20 条消息，重启后不再丢失会话上下文
-
-### 移除
-
-- 所有 React 依赖 (react, react-dom, zustand, @vitejs/plugin-react 等)
-- 手写 UI 组件 (StatCard, RadarChart, ParamSlider, ParamToggle, ParamNumber, ChatInput, ChatMessageList, PluginCard, LayerTabs 等)
 
 ---
 
