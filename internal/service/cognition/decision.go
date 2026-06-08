@@ -21,6 +21,10 @@ import (
 type DecisionEngine struct {
 	rawLLM func([]domain.Message) (string, error)
 
+	// toolLLM is the function-calling path. When set, Decide() uses it instead of
+	// the rawLLM + JSON-parse path. Returns (toolName, toolArgsJSON, error).
+	toolLLM func(messages []domain.Message, tools []DecisionToolSpec) (string, string, error)
+
 	mu             sync.Mutex
 	lastDecisionAt time.Time
 	minInterval    time.Duration
@@ -45,6 +49,12 @@ func NewDecisionEngine(rawLLM func([]domain.Message) (string, error)) *DecisionE
 		rawLLM:      rawLLM,
 		minInterval: 15 * time.Minute,
 	}
+}
+
+// SetToolLLM enables the function-calling decision path. When set, Decide() calls
+// the LLM with 16 action tools + tool_choice="required", eliminating JSON parsing.
+func (e *DecisionEngine) SetToolLLM(fn func(messages []domain.Message, tools []DecisionToolSpec) (string, string, error)) {
+	e.toolLLM = fn
 }
 
 // SetStoragePath enables Reflexion log persistence to a JSON file.
@@ -107,13 +117,89 @@ func (e *DecisionEngine) ResetIdle() {
 }
 
 // Decide is the LLM fallback for complex/edge scenarios.
-// feats and needs may be nil — the prompt degrades gracefully to basic context.
+// When toolLLM is set (v0.4+), it uses function calling with 16 action tools
+// instead of the legacy prompt + JSON-parse path.
 func (e *DecisionEngine) Decide(ctx domain.DecisionContext, feats *domain.QuantifiedFeatures, needs *domain.IntrinsicNeeds) (*domain.DecisionOutput, error) {
+	return e.DecideFull(ctx, feats, needs)
+}
+
+// DecideFull uses the full decision prompt (~370 tokens) for complex scenarios.
+func (e *DecisionEngine) DecideFull(ctx domain.DecisionContext, feats *domain.QuantifiedFeatures, needs *domain.IntrinsicNeeds) (*domain.DecisionOutput, error) {
+	api.StatusBusInstance().EmitStart("decision", "LLM full decision...")
+	if e.toolLLM != nil {
+		return e.decideWithPrompt(e.buildDecisionSystemPrompt(ctx, feats, needs))
+	}
+	return e.decideLegacy(ctx, feats, needs)
+}
+
+// DecideLite uses a compact prompt (~200 tokens) for simpler scenarios.
+func (e *DecisionEngine) DecideLite(ctx domain.DecisionContext, feats *domain.QuantifiedFeatures, needs *domain.IntrinsicNeeds) (*domain.DecisionOutput, error) {
+	api.StatusBusInstance().EmitStart("decision", "LLM lite decision...")
+	prompt := buildS2LitePrompt(feats, nil)
+	return e.decideWithPrompt(prompt)
+}
+
+// decideWithPrompt is the shared function-calling path.
+func (e *DecisionEngine) decideWithPrompt(prompt string) (*domain.DecisionOutput, error) {
+	if e.toolLLM == nil {
+		return nil, fmt.Errorf("decision engine: toolLLM not set")
+	}
+	messages := []domain.Message{{Role: "system", Content: prompt}}
+	tools := BuildDecisionTools()
+
+	toolName, toolArgs, err := e.toolLLM(messages, tools)
+	if err != nil {
+		slog.Warn("decision: tool LLM failed", "err", err)
+		e.mu.Lock()
+		e.deciding = false
+		e.mu.Unlock()
+		api.StatusBusInstance().EmitFail("decision", err.Error())
+		return nil, err
+	}
+
+	if toolName == "" {
+		slog.Warn("decision: LLM returned no tool call, defaulting to none")
+		e.finishDecision("none")
+		api.StatusBusInstance().EmitOK("decision", "none: no tool called")
+		return &domain.DecisionOutput{ShouldAct: false, Action: "none", Reason: "no tool called"}, nil
+	}
+
+	var args struct {
+		Reason    string `json:"reason"`
+		Mood      string `json:"mood"`
+		ToolInput string `json:"tool_input"`
+	}
+	if toolArgs != "" {
+		json.Unmarshal([]byte(toolArgs), &args)
+	}
+
+	def := ActionByName(toolName)
+	source := ""
+	if def != nil {
+		source = def.Source
+	}
+
+	output := &domain.DecisionOutput{
+		ShouldAct: toolName != "none",
+		Action:    toolName,
+		Source:    source,
+		Reason:    args.Reason,
+		Mood:      args.Mood,
+		ToolInput: args.ToolInput,
+		Priority:  0.8,
+	}
+
+	e.finishDecision(toolName)
+	api.StatusBusInstance().EmitOK("decision", toolName+"/"+source+": "+args.Reason)
+	return output, nil
+}
+
+// decideLegacy is the pre-v0.4 prompt + JSON-parse path, kept as fallback.
+func (e *DecisionEngine) decideLegacy(ctx domain.DecisionContext, feats *domain.QuantifiedFeatures, needs *domain.IntrinsicNeeds) (*domain.DecisionOutput, error) {
 	if e.rawLLM == nil {
 		return nil, fmt.Errorf("decision engine: no LLM available")
 	}
 
-	api.StatusBusInstance().EmitStart("decision", "LLM 兜底决策...")
 	prompt := e.buildFallbackPrompt(ctx, feats, needs)
 	result, err := e.rawLLM([]domain.Message{{Role: "user", Content: prompt}})
 	if err != nil {
@@ -129,29 +215,74 @@ func (e *DecisionEngine) Decide(ctx domain.DecisionContext, feats *domain.Quanti
 	var output domain.DecisionOutput
 	if err := json.Unmarshal([]byte(raw), &output); err != nil {
 		slog.Warn("decision: JSON parse failed", "err", err, "raw", raw[:min(len(raw), 200)])
-		e.mu.Lock()
-		e.deciding = false
-		e.mu.Unlock()
+		e.finishDecision("none")
 		return &domain.DecisionOutput{ShouldAct: false, Action: "none", Reason: "parse error"}, nil
 	}
 
-	// Defensive: if LLM forgot should_act but gave an explicit action, infer true.
 	if !output.ShouldAct && output.Action != "" && output.Action != "none" {
 		output.ShouldAct = true
 	}
 
+	e.finishDecision(output.Action)
+	api.StatusBusInstance().EmitOK("decision", output.Action+"/"+output.Source+": "+output.Reason)
+	return &output, nil
+}
+
+// finishDecision updates internal state after a decision is made.
+func (e *DecisionEngine) finishDecision(action string) {
 	e.mu.Lock()
 	e.lastDecisionAt = time.Now()
-	if output.Action == "none" || !output.ShouldAct {
+	if action == "none" {
 		e.idleCount++
 	} else {
 		e.idleCount = 0
 	}
 	e.deciding = false
 	e.mu.Unlock()
+}
 
-	api.StatusBusInstance().EmitOK("decision", output.Action+"/"+output.Source+": "+output.Reason)
-	return &output, nil
+// buildDecisionSystemPrompt creates a brief system prompt for the function-calling
+// decision path. Unlike the legacy fallback prompt, this is concise — the detailed
+// action guidance lives in each tool's description, not in the prompt text.
+func (e *DecisionEngine) buildDecisionSystemPrompt(ctx domain.DecisionContext, feats *domain.QuantifiedFeatures, needs *domain.IntrinsicNeeds) string {
+	var sb strings.Builder
+	sb.WriteString("你是诗音，一只关心主人的猫娘桌面宠物。现在是自主决策时刻——你需要从可用工具中选择一个动作。\n\n")
+
+	// User context (compact).
+	if feats != nil {
+		workLabel := "休闲中"
+		if feats.U3_IsWorking > 0 && feats.U4_ContinuousWorkMins >= 5 {
+			workLabel = fmt.Sprintf("工作中(已%.0f分钟)", feats.U4_ContinuousWorkMins)
+		}
+		sb.WriteString(fmt.Sprintf("主人: %s %s\n", feats.U1_AppCategory, workLabel))
+		if feats.U12_NightTime > 0 {
+			sb.WriteString("⚠️ 深夜时段，避免打扰\n")
+		}
+		if feats.R4_RecentRejections >= 2 {
+			sb.WriteString(fmt.Sprintf("⚠️ 最近被拒绝%.0f次，谨慎搭话\n", feats.R4_RecentRejections))
+		}
+	}
+
+	// Emotion snapshot (compact).
+	sb.WriteString(fmt.Sprintf("情绪: %s(%.0f%%) 亲密度%.0f%% 困倦%.0f%% 烦躁%.0f%%\n",
+		ctx.EmotionState.Primary, ctx.EmotionState.Intensity*100,
+		ctx.EmotionVec.Affection*100, ctx.EmotionVec.Sleepiness*100, ctx.EmotionVec.Annoyance*100))
+
+	// Needs snapshot.
+	if needs != nil {
+		sb.WriteString(fmt.Sprintf("需求: 陪伴%.0f 关怀%.0f 好奇%.0f 休息%.0f\n",
+			needs.Companionship*100, needs.Care*100, needs.Curiosity*100, needs.Rest*100))
+	}
+
+	// Recent user message.
+	if ctx.RecentUserMsg != "" {
+		sb.WriteString(fmt.Sprintf("最近消息: \"%s\"\n", ctx.RecentUserMsg))
+	}
+
+	sb.WriteString(fmt.Sprintf("距上次互动: %.0f分钟\n", ctx.TimeSinceLastChat.Minutes()))
+	sb.WriteString("\n选择一个最合适的动作。如果主人正忙或深夜且非紧急，选 none。")
+
+	return sb.String()
 }
 
 // buildFallbackPrompt creates a structured prompt with full quantified context.

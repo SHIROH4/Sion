@@ -170,8 +170,15 @@ const atomicFactExtractionPrompt = `## 原子事实提取
   - "今天是六一儿童节" → 用今天的日期，不是2024年
 
 ### 输出格式
-JSON 数组:
-[{"content": "主人喜欢王者荣耀", "importance": 0.8, "fact_role": "core", "start_time": 0, "end_time": 0}]
+JSON 数组，每条包含 confidence 字段表示你对"这确实是事实而非猜测"的确信度:
+[{"content": "主人喜欢王者荣耀", "importance": 0.8, "confidence": 0.9, "fact_role": "core", "start_time": 0, "end_time": 0}]
+
+confidence 评分指南:
+- 0.9-1.0: 用户明确陈述的事实 ("我叫张三"、"我用Go")
+- 0.7-0.8: 从对话中可推断的事实 (用户反复提到某个工具)
+- 0.5-0.6: 单次提及、可能有歧义
+- 0.3-0.4: 不确定、可能是玩笑或夸张
+- <0.3: 不提取
 
 如果没有值得提取的事实，输出空数组 []。
 

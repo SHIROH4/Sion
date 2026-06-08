@@ -6,7 +6,8 @@
 
 ![License](https://img.shields.io/badge/license-MIT-blue)
 ![Go](https://img.shields.io/badge/Go-1.25+-00ADD8)
-![React](https://img.shields.io/badge/React-18-61DAFB)
+![Vue](https://img.shields.io/badge/Vue-3.4-4FC08D)
+![Naive UI](https://img.shields.io/badge/Naive_UI-2.43-2080F0)
 
 ---
 
@@ -14,16 +15,17 @@
 
 | 系统 | 功能 | 说明 |
 |------|------|------|
-| **Live2D 桌宠** | 视线追踪、拖拽、戳一戳、气泡文字、表情切换 | 基于 PIXI.js + pixi-live2d-display |
+| **Live2D 桌宠** | 视线追踪、拖拽、戳一戳、气泡文字 | PIXI.js + pixi-live2d-display |
 | **AI 对话** | 代码问答、Debug、技术选型、闲聊 | LLM API 驱动，流式响应 |
-| **主动搭话** | 长时间工作提醒、深夜陪伴、饭点关心 | 规则引擎 + System 2 LLM 决策 |
-| **记忆系统** | 三级记忆 (会话/日记/事实) + 向量检索 + Ebbinghaus 遗忘 | SQLite + Ollama embedding |
+| **主动搭话** | 工作提醒、深夜陪伴、饭点关心 | MetaReasoner 四路仲裁 (S1/S2Lite/S2Full/None) |
+| **决策引擎** | 策略规则引擎 + LLM function calling | 元认知仲裁器 (SOFAI 2025) |
+| **记忆系统** | 四级记忆 (会话/日记/事实/策略) + 向量检索 | SQLite + Ollama embedding |
 | **情绪系统** | PAD 三维 + 8 维向量 + 人格参数学习 | LLM 评估 + 规则回退 |
-| **自学习** | 策略原则提取、行为模式挖掘、驱力评分自适应 | 日反思 + RL 权重更新 |
+| **自学习** | 策略蒸馏 + 即时修正 + 经验注入 + 人格适应 | 统一反馈处理器 |
 | **截图即问** | macOS Vision OCR + 多模态 LLM 分析 | 原生 Vision Framework |
 | **屏幕感知** | 定期 OCR 屏幕、识别工作/休闲状态 | 自适应间隔 |
-| **联网搜索** | 博查 API 接入，对话中搜索最新技术信息 | 意图检测 + 强制工具调用 |
-| **工具调用** | 三层架构：代码路由 → 工具执行 → LLM 话术 | tool_choice 强制 + 2 轮回复 |
+| **联网搜索** | 博查 API 接入，对话中搜索最新技术信息 | API tools 字段 + tool_choice |
+| **工具调用** | API tools JSON Schema 字段传入 | DeepSeek 原生 tool calling |
 
 ---
 
@@ -31,8 +33,8 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                          Sion v0.2.0                                │
-│              桌面猫娘 — AI 对话 + 主动认知 + 工具调用                   │
+│                          Sion v0.4.0                                │
+│     桌面猫娘 — AI 对话 + 量化认知 + 元认知决策 + 工具调用 + 自学习      │
 └─────────────────────────────────────────────────────────────────────┘
 
                             ┌──────────────────┐
@@ -47,7 +49,8 @@
               ▼                      ▼                      ▼
 ┌─────────────────────┐  ┌─────────────────────┐  ┌─────────────────┐
 │    对话层 (Chat)     │  │  后台认知 (Cognition)│  │ 前端 (Frontend) │
-│  用户发消息时触发     │  │  每 5min tick 触发   │  │  Wails + React  │
+│  用户发消息时触发     │  │  每 5min tick 触发   │  │ Wails + Vue 3   │
+│ + Naive UI      │
 └─────────┬───────────┘  └──────────┬──────────┘  └────────┬────────┘
           │                         │                      │
           ▼                         ▼                      │

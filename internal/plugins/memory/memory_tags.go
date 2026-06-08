@@ -94,23 +94,9 @@ func (p *MemoryPlugin) RegisterFunctions(reg *plugin.FunctionRegistry) {
 			"required": []string{"description"},
 		},
 	)
-	reg.RegisterWithParams("Memorize",
-		"Permanently store important user information. "+
-			"Call when the user explicitly shares facts about themselves "+
-			"(birthday, name, preferences, plans, habits). "+
-			"Do NOT call for casual statements or opinions.",
-		p.Memorize,
-		map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"content": map[string]any{
-					"type":        "string",
-					"description": "要记住的内容",
-				},
-			},
-			"required": []string{"content"},
-		},
-	)
+	// Memorize is no longer an LLM tool — fact storage is handled automatically
+	// by PostProcessor.ExtractAtomicFacts with confidence gating.
+	// The internal MemorizeFact function is still available for code-level use.
 }
 
 // GetMemory is the LLM-callable memory retrieval function.

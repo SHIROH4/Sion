@@ -42,6 +42,7 @@ type FactEntry struct {
 type AtomicFactInput struct {
 	Content    string   `json:"content"`
 	Importance float64  `json:"importance"`
+	Confidence float64  `json:"confidence"` // 0-1: how certain the LLM is that this is a real fact
 	FactRole   FactRole `json:"fact_role"`
 	StartTime  int64    `json:"start_time"`
 	EndTime    int64    `json:"end_time"`

@@ -115,6 +115,7 @@ type MemoryPlugin struct {
 	mu         sync.Mutex
 	wg         sync.WaitGroup
 	rawLLM     func([]plugin.Message) (string, error)
+	toolLLM    func(messages []domain.Message, tools []cognition.DecisionToolSpec) (string, string, error)
 
 	selfModel  *SelfModel
 	sessionBuf *SessionBuffer
@@ -178,6 +179,11 @@ type MemoryPlugin struct {
 	needModel         *cognition.NeedModel       // 内源需求模型
 	lastFeatures      *domain.QuantifiedFeatures // 最新量化因子快照 (API暴露)
 	lastNeedsSnapshot *domain.IntrinsicNeeds     // 最新需求快照 (API暴露)
+
+	// v0.4 decision pipeline (shadow mode — runs alongside existing, logs comparisons)
+	ruleEngine        *cognition.S1RuleEngine
+	metaReasoner      *cognition.MetaReasoner
+	feedbackProcessor *cognition.UnifiedFeedbackProcessor
 
 	pendingOutcomeCtx    domain.ActionContext
 	pendingEscalationLvl int
@@ -496,6 +502,9 @@ func (p *MemoryPlugin) Start() error {
 	// System 2 decision engine + tool registry.
 	p.decisionEngine = cognition.NewDecisionEngine(p.rawLLM)
 	p.decisionEngine.SetStoragePath(os.Getenv("HOME") + "/.desktop-pet/reflexion.json")
+	if p.toolLLM != nil {
+		p.decisionEngine.SetToolLLM(p.toolLLM)
+	}
 	p.motivator = cognition.NewMotivator()
 	p.motivator.SetStoragePath(os.Getenv("HOME") + "/.desktop-pet/motivator_weights.json")
 	p.featureComputer = cognition.NewFeatureComputer(p.db, p.outcomeRepo)
@@ -517,6 +526,18 @@ func (p *MemoryPlugin) Start() error {
 	// Intrinsic need model.
 	p.needModel = cognition.NewNeedModel()
 	p.needModel.LoadFrom(p.store.LoadProfileValue)
+
+	// ---- v0.4 decision pipeline (shadow mode — logs comparisons, no behavior change) ----
+	p.ruleEngine = cognition.NewS1RuleEngine()
+	p.metaReasoner = cognition.DefaultMetaReasoner()
+	p.feedbackProcessor = cognition.NewUnifiedFeedbackProcessor(p.ruleEngine, 200)
+	p.feedbackProcessor.OnStrategicDistill = func(exps []cognition.ExperienceRecord, rules []cognition.StrategyRule) error {
+		if p.strategyAgent != nil && p.strategyAgent.ShouldRun() {
+			_, err := p.strategyAgent.Run()
+			return err
+		}
+		return nil
+	}
 	p.learner = cognition.NewLearner(p.motivator)
 	p.learner.SetOutcomeRepo(p.outcomeRepo)
 	p.toolRegistry = tools.NewRegistry()
@@ -1020,98 +1041,90 @@ func (p *MemoryPlugin) runSystem2Decision() {
 	// Store latest features for API exposure.
 	p.lastFeatures = feats
 
-	// Compute drives from quantified features + needs, then score actions.
-	// Care suggestions from CareEngine feed into the unified action scoring.
+	// Compute drives from quantified features (kept for S1 fallback and debugging).
 	var dec *domain.DecisionOutput
-	var careSuggestions []domain.CareSuggestion
-	if p.careEngine != nil {
-		careSuggestions = p.careEngine.Suggestions(now)
-	}
 	s, c, cur, q, e := cognition.ComputeDrives(feats, needsSnapshot)
-	action, score, secondScore := p.motivator.ScoreActions(s, c, cur, q, e, feats, careSuggestions)
-	needsLLM := cognition.RouteToLLM(ctx, p.lastScoredAction, p.consecutiveAction, feats, needsSnapshot, action)
-	// Session-level rejection: if the chosen action was recently rejected, force LLM fallback.
-	if !needsLLM && p.IsActionRejected(action) {
-		needsLLM = true
-	}
-	// Topic overlap guard.
-	if strings.HasPrefix(action, "speak") && p.recentChatSaysGoodnight() {
-		action = "none"
-		score = 0
-	}
-	// Unanswered suppression: 2+ consecutive messages with no reply → silence.
-	// Speak actions are suppressed; only observe/reflect/none remain.
-	if p.consecutiveUnanswered >= 2 && (strings.HasPrefix(action, "speak") || strings.HasPrefix(action, "care_")) {
-		action = "none"
-		score = 0
+
+	// ---- v0.4 decision pipeline ----
+	// Safety gates (hard rules — LLM cannot override).
+	if p.consecutiveUnanswered >= 2 {
 		if p.pctx.Logger != nil {
-			p.pctx.Logger.Info("memory: suppressing speak due to consecutive unanswered", "count", p.consecutiveUnanswered)
+			p.pctx.Logger.Info("memory: suppressing all due to consecutive unanswered", "count", p.consecutiveUnanswered)
 		}
+		return
 	}
-	// Slow re-accumulation: once suppressed, decay the counter slowly so the
-	// agent doesn't immediately resume spamming when user comes back.
+	if p.recentChatSaysGoodnight() {
+		return
+	}
 	if p.consecutiveUnanswered >= 1 && time.Since(p.pendingProactiveAt) > 30*time.Minute {
-		if p.consecutiveUnanswered > 0 {
-			p.consecutiveUnanswered-- // decay 1 per 30min silence
-		}
-	}
-	if p.recentChatAlreadyCovers(action) {
-		// User already addressed this topic — switch to curiosity if available.
-		if feats != nil && feats.A11_ActiveInquiries > 0 {
-			action = "speak_inquiry"
-			score = 0.5
-		} else {
-			action = "none"
-			score = 0
-		}
-	}
-	// Decision conflict: top 2 actions too close → let LLM break the tie.
-	if !needsLLM && cognition.RouteToLLMWithScores(score, secondScore, action) {
-		needsLLM = true
+		p.consecutiveUnanswered--
 	}
 
-	if needsLLM {
-		var err error
-		dec, err = p.decisionEngine.Decide(ctx, feats, needsSnapshot)
-		if err != nil || dec == nil || !dec.ShouldAct || dec.Action == "none" {
-			if dec == nil || dec.Action == "none" {
-				return
-			}
+	// Immediate correction: check for recently-suppressed actions.
+	immediateSuppress := make(map[string]bool)
+	if p.feedbackProcessor != nil && p.feedbackProcessor.Immediate != nil {
+		for _, a := range p.feedbackProcessor.Immediate.SuppressedActions() {
+			immediateSuppress[a] = true
+		}
+	}
+
+	// 1. Try S1 rule engine.
+	drives := cognition.DriveScores{Social: s, Care: c, Curious: cur, Quiet: q, Explore: e}
+	ruleResult, hasRule := p.ruleEngine.Decide(feats, drives)
+	if hasRule && immediateSuppress[ruleResult.Action] {
+		hasRule = false
+	}
+
+	// 2. Meta-reasoner decides the path.
+	hasConflict := hasRule && ruleResult != nil && ruleResult.MatchedCount > 1
+	hasExtreme := ctx.EmotionState.Primary == "anger" || ctx.EmotionState.Primary == "fear"
+	route := p.metaReasoner.Route(feats, ruleResult, hasConflict, hasExtreme)
+
+	// 3. Execute on the chosen path.
+	var err error
+	switch route {
+	case cognition.PathNone:
+		return
+	case cognition.PathS1:
+		if ruleResult == nil {
 			return
 		}
-	} else {
 		dec = &domain.DecisionOutput{
-			ShouldAct: action != "none",
-			Action:    action,
-			Source:    actionToSource(action),
-			Reason:    fmt.Sprintf("scorer: %.2f", score),
-			Priority:  score,
+			ShouldAct: ruleResult.Action != "none",
+			Action:    ruleResult.Action,
+			Source:    ruleResult.RuleSource,
+			Reason:    "S1 rule engine (conf=" + fmt.Sprintf("%.2f", ruleResult.Confidence) + ")",
+			Priority:  ruleResult.Confidence,
 		}
-		if !dec.ShouldAct {
-			return
-		}
+	case cognition.PathS2Lite:
+		dec, err = p.decisionEngine.DecideLite(ctx, feats, needsSnapshot)
+	case cognition.PathS2Full:
+		dec, err = p.decisionEngine.DecideFull(ctx, feats, needsSnapshot)
+	}
+	if err != nil || dec == nil || !dec.ShouldAct || dec.Action == "none" {
+		return
+	}
+	if immediateSuppress[dec.Action] {
+		return
 	}
 
 	// Track consecutive actions for repetition detection.
-	if action == p.lastScoredAction {
+	if dec.Action == p.lastScoredAction {
 		p.consecutiveAction++
 	} else {
 		p.consecutiveAction = 1
 	}
-	p.lastScoredAction = action
+	p.lastScoredAction = dec.Action
 
-	// Record drive snapshot for offline learning.
+	// Record drive snapshot for feedback processing.
 	if p.learner != nil {
-		reward := 0.0 // will be updated when outcome recorded
-		p.pendingDriveID = p.learner.RecordDrive(action, s, c, cur, q, e, reward)
-		// Periodic batch learning + strategy distillation.
+		p.pendingDriveID = p.learner.RecordDrive(dec.Action, s, c, cur, q, e, 0)
 		if p.learner.ShouldLearn() {
 			p.learner.BatchLearn()
 			if p.principleRepo != nil {
 				p.learner.DistillStrategies(p.principleRepo)
 			}
 		}
-		// System3 audit: check for stuck loops.
 		if stuck, drift := p.learner.Audit(); len(stuck) > 0 || drift {
 			if drift && p.pctx.Logger != nil {
 				p.pctx.Logger.Warn("learner: drift detected", "stuck", stuck)

@@ -208,6 +208,16 @@ func (pp *PostProcessor) Process(ctx *domain.ChatContext) {
 				if d := pp.DeterministicImportance(atomicFacts[i].Content, emo); d > atomicFacts[i].Importance {
 					atomicFacts[i].Importance = d
 				}
+				// Confidence gating: only save facts the LLM is reasonably sure about.
+				// ≥0.7 → auto-save (high confidence, explicitly stated facts)
+				// 0.4-0.7 → save with reduced importance, won't be proactively injected
+				// <0.4 → discard (likely noise, joke, or hallucination)
+				if atomicFacts[i].Confidence < 0.4 {
+					continue
+				}
+				if atomicFacts[i].Confidence < 0.7 {
+					atomicFacts[i].Importance *= 0.5 // demote uncertain facts
+				}
 				if strings.Contains(atomicFacts[i].Content, "诗音") {
 					continue
 				}
@@ -215,7 +225,8 @@ func (pp *PostProcessor) Process(ctx *domain.ChatContext) {
 					continue
 				}
 				pp.Store.SaveAtomicFact(atomicFacts[i])
-				if pp.EpisodeFindOrCreate != nil {
+				// Only attach high-confidence facts to episodes for topic clustering.
+				if atomicFacts[i].Confidence >= 0.7 && pp.EpisodeFindOrCreate != nil {
 					fact := pp.LookupFactByContent(pp.DB, atomicFacts[i].Content)
 					if fact != nil {
 						epID, _ := pp.EpisodeFindOrCreate(*fact)

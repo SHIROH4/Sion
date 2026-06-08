@@ -6,6 +6,7 @@ import (
 
 	"desktop-pet/internal/app/plugin"
 	"desktop-pet/internal/domain"
+	"desktop-pet/internal/service/cognition"
 )
 
 // Services bundles all pre-built service objects that MemoryPlugin needs.
@@ -29,6 +30,7 @@ type Services struct {
 	TopicStore   *TopicStore
 	Identity     *IdentityGraph
 	LLMSync      func([]plugin.Message) (string, error)
+	LLMWithTools func(messages []domain.Message, tools []cognition.DecisionToolSpec) (string, string, error)
 	VisionLLM    func([]plugin.Message) (string, error)
 	Scheduler    Scheduler
 }
@@ -51,6 +53,7 @@ func (p *MemoryPlugin) SetServices(svc *Services) {
 	p.topicStoreInst = svc.TopicStore
 	p.identityGraph = svc.Identity
 	p.rawLLM = svc.LLMSync
+	p.toolLLM = svc.LLMWithTools
 	p.scheduler = svc.Scheduler
 	p.embSvc = svc.EmbSvc
 

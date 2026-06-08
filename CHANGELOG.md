@@ -1,5 +1,32 @@
 # 更新日志
 
+## v0.4.0 (2026-06-09) — Decision Layer Refactoring: Function Calling + Meta-Reasoner
+
+### 决策层重构 (基于 ICLR 2025 RaDAgent + SOFAI 论文)
+
+- **决策管线重写**: RouterToLLM + ScoreActions → MetaReasoner 四路仲裁 (None/S1/S2Lite/S2Full)
+- **S1 策略规则引擎**: 替代线性点积打分，基于 StrategyRule 的条件匹配 + 置信度排序
+- **System 2 function calling**: 16 个动作全部转为 LLM tools，`tool_choice="required"` 强制选择
+- **分级 LLM 上下文**: S2-Full (~370 tokens) / S2-Lite (~200 tokens)，按场景复杂度自适应
+- **元认知仲裁器 (MetaReasoner)**: 动态评估复杂度、风险、策略覆盖度，决定走哪条路径
+- **即时修正 (ImmediateCorrector)**: 被拒后秒级抑制同类动作，不等 6h 批处理 (参考 Agent-R 2025)
+- **统一反馈处理器 (UnifiedFeedbackProcessor)**: 合并 7 个分散学习机制为单入口三出口
+- **经验上下文注入**: 每次决策自动注入相似场景的历史案例 (参考 RaDAgent)
+
+### 记忆系统重构
+
+- **置信度门控**: 原子事实提取增加 confidence 评分 (≥0.7 存储, <0.4 丢弃)
+- **L1/L2 主动注入移除**: 深度记忆统一走 `get_memory` 工具，减少每轮 ~200-500 token
+- **Memorize 工具移除**: 事实存储完全由 PostProcessor 自动处理，LLM 不再参与
+
+### 架构影响
+
+- 决策质量: 复杂场景不再受线性公式限制，LLM 可理解多因素交互
+- 自学习: 从"调权重矩阵"变为"提炼策略规则 + 经验注入"
+- 可解释性: 每条策略规则有来源、置信度、命中次数
+
+---
+
 ## v0.3.0 (2026-06-08) — Vue 3 + Naive UI Frontend Overhaul, L0 Persistence
 
 ### 前端架构升级

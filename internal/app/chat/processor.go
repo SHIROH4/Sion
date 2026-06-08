@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"desktop-pet/internal/domain"
-	svcmemory "desktop-pet/internal/service/memory"
 )
 
 // Processor prepares chat context by injecting persona, emotion, memory, and
@@ -44,9 +43,13 @@ func FilterMessage(msg *domain.Message) error {
 
 // ---- OnBeforeChat ----
 
-// OnBeforeChat injects a compact context with three-layer memory retrieval:
-// L3 Self Model + Emotion + User Profile (always) → L2+L1 semantic search
-// (vector path) or fallback (DecayWeight) → L0 SessionBuffer → cross-session.
+// OnBeforeChat injects essential context only. Deep memory (L1/L2) is NOT
+// proactively injected — the LLM calls get_memory tool when it needs more.
+//
+// Injected: Persona → Screen → Identity → Self Model (L3) → Emotion →
+// User Profile → Time-filtered facts → Session Buffer (L0).
+//
+// Not injected: L1 diary / L2 semantic facts. Use get_memory tool instead.
 func (p *Processor) OnBeforeChat(ctx *domain.ChatContext) error {
 	queryText := ctx.Input
 
@@ -129,48 +132,13 @@ func (p *Processor) OnBeforeChat(ctx *domain.ChatContext) error {
 		}
 	}
 
-	// L2+L1: Semantic retrieval (vector path) or DecayWeight fallback.
-	if p.EmbSvc != nil && p.Store != nil {
-		queryVec, err := p.EmbSvc.Vectorize(queryText)
-		if err == nil {
-			candidates, _ := p.Store.UnifiedSearch(queryVec, queryText, 10)
-			var topResults []domain.UnifiedResult
-			if p.TurnCount != nil && *p.TurnCount%5 == 0 && p.RerankFn != nil {
-				topResults = p.RerankFn(candidates, queryText, 3)
-			} else {
-				topResults = candidates
-				if len(topResults) > 3 {
-					topResults = topResults[:3]
-				}
-			}
-
-			for i := len(topResults) - 1; i >= 0; i-- {
-				tag := ""
-				if p.TimeTag != nil {
-					tag = p.TimeTag(topResults[i])
-				}
-				ctx.Messages = append([]domain.Message{
-					{Role: "system", Content: fmt.Sprintf("[相关记忆] %s%s", tag, topResults[i].Content)},
-				}, ctx.Messages...)
-			}
-
-			var recallIDs []int64
-			for _, r := range topResults {
-				if r.Source == "fact" {
-					recallIDs = append(recallIDs, r.ID)
-				}
-			}
-			if len(recallIDs) > 0 && p.WG != nil {
-				p.WG.Add(1)
-				go func(ids []int64) {
-					defer p.WG.Done()
-					p.Store.BatchUpdateFactRecall(ids)
-				}(recallIDs)
-			}
-		}
-	} else if p.Store != nil {
-		p.InjectFactsFallback(ctx)
-	}
+	// L2+L1: No longer proactively injected. Deep memory retrieval is now
+	// exclusively via the get_memory tool — LLM calls it when it needs more
+	// context than what L0+L3 provide. This avoids polluting every request
+	// with potentially irrelevant facts and gives get_memory a real purpose.
+	//
+	// The batch recall update is still done lazily when get_memory is called
+	// (see memory_tags.go GetMemory).
 
 	// L0: Recent conversation — merge in-memory buffer with persisted history
 	// so that cross-process chats (settings ↔ pet) stay in sync.
@@ -191,48 +159,6 @@ func (p *Processor) OnBeforeChat(ctx *domain.ChatContext) error {
 	}
 
 	return nil
-}
-
-// ---- Fact fallback (pre-Phase-F) ----
-
-// InjectFactsFallback is the pre-Phase-F manual DecayWeight ranking path,
-// used when EmbedSvc hasn't been initialised.
-func (p *Processor) InjectFactsFallback(ctx *domain.ChatContext) {
-	facts := p.Store.ListActiveFacts(svcmemory.ActiveThreshold)
-	type weighted struct {
-		content string
-		w       float64
-	}
-	var ranked []weighted
-	for _, f := range facts {
-		w := svcmemory.DecayWeight(f.Importance, f.LastRecalledAt, f.RecallCount, 30, 0.15)
-		if w >= svcmemory.ActiveThreshold {
-			ranked = append(ranked, weighted{content: f.Content, w: w})
-		}
-	}
-	sort.Slice(ranked, func(i, j int) bool { return ranked[i].w > ranked[j].w })
-	limit := len(ranked)
-	if limit > 5 {
-		limit = 5
-	}
-	for i := limit - 1; i >= 0; i-- {
-		tag := ""
-		if ranked[i].w >= svcmemory.CoreThreshold {
-			tag = "[核心记忆] "
-		}
-		ctx.Messages = append([]domain.Message{
-			{Role: "system", Content: tag + ranked[i].content},
-		}, ctx.Messages...)
-	}
-	for _, f := range facts {
-		if f.Importance > svcmemory.ActiveThreshold && p.WG != nil {
-			p.WG.Add(1)
-			go func(id int64) {
-				defer p.WG.Done()
-				p.Store.UpdateFactRecall(id)
-			}(f.ID)
-		}
-	}
 }
 
 // ---- Context builders ----

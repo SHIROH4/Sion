@@ -224,6 +224,53 @@ func BuildDecisionSkills() string {
 	return sb
 }
 
+// DecisionToolSpec describes a decision action as an LLM-callable function tool.
+type DecisionToolSpec struct {
+	Name        string
+	Description string
+	Parameters  map[string]any // JSON Schema properties
+}
+
+// BuildDecisionTools returns all 16 action definitions as function-calling tool specs.
+// The caller converts these to the LLM gateway's Tool format and passes them with
+// tool_choice="required" so the LLM must pick exactly one action.
+func BuildDecisionTools() []DecisionToolSpec {
+	actions := AllActions()
+	tools := make([]DecisionToolSpec, len(actions))
+	for i, a := range actions {
+		params := map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"reason": map[string]any{
+					"type":        "string",
+					"description": "为什么选择这个动作（一句话）",
+				},
+			},
+			"required": []string{"reason"},
+		}
+		// Add extra params for speak actions (mood, tone) and tool actions (tool_input).
+		switch {
+		case a.Category == "social" || a.Category == "care":
+			params["properties"].(map[string]any)["mood"] = map[string]any{
+				"type": "string",
+				"enum": []string{"gentle", "playful", "firm", "tsundere", "worried"},
+				"description": "说话的语气",
+			}
+		case a.NeedsTool && a.ToolName == "search":
+			params["properties"].(map[string]any)["tool_input"] = map[string]any{
+				"type":        "string",
+				"description": a.ToolHint,
+			}
+		}
+		tools[i] = DecisionToolSpec{
+			Name:        a.Name,
+			Description: a.SkillCard,
+			Parameters:  params,
+		}
+	}
+	return tools
+}
+
 // isSpeakAction returns true for actions that involve talking to the user.
 func isSpeakAction(action string) bool {
 	a := ActionByName(action)

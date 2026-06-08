@@ -15,6 +15,7 @@ import (
 	"desktop-pet/internal/api"
 	"desktop-pet/internal/app/plugin"
 	"desktop-pet/internal/domain"
+	"desktop-pet/internal/service/cognition"
 	infracfg "desktop-pet/internal/infra/config"
 	infrallm "desktop-pet/internal/infra/llm"
 	"desktop-pet/internal/infra/native"
@@ -216,6 +217,46 @@ func (a *App) domainReady(ctx context.Context) error {
 	llmSync := func(msgs []plugin.Message) (string, error) {
 		return a.LLMGW.ChatSync(context.Background(), msgs)
 	}
+
+	// llmWithTools wraps the Gateway's ChatSyncWithTools for the System 2 decision
+	// engine. It passes all 16 action tools with tool_choice="required" so the LLM
+	// must pick exactly one action. Returns (toolName, toolArgsJSON, error).
+	llmWithTools := func(messages []domain.Message, tools []cognition.DecisionToolSpec) (string, string, error) {
+		// Convert domain.Message → plugin.Message (inline to avoid forward ref).
+		pluginMsgs := make([]plugin.Message, len(messages))
+		for i, m := range messages {
+			pluginMsgs[i] = plugin.Message{Role: m.Role, Content: m.Content}
+		}
+		// Convert DecisionToolSpec → llm.Tool.
+		llmTools := make([]infrallm.Tool, len(tools))
+		for i, t := range tools {
+			llmTools[i] = infrallm.Tool{
+				Type: "function",
+				Function: infrallm.ToolFunction{
+					Name:        t.Name,
+					Description: t.Description,
+					Parameters:  t.Parameters,
+				},
+			}
+		}
+
+		var chosenName, chosenArgs string
+		onTool := func(name, argsJSON string) string {
+			chosenName = name
+			chosenArgs = argsJSON
+			return `{"status":"recorded"}`
+		}
+
+		_, err := a.LLMGW.ChatSyncWithTools(
+			context.Background(),
+			pluginMsgs,
+			llmTools,
+			onTool,
+			1,          // maxRounds: decision is single-round
+			"required", // must pick exactly one action
+		)
+		return chosenName, chosenArgs, err
+	}
 	var visLLM func([]plugin.Message) (string, error)
 	if cfg.VisionModel != "" {
 		visGW := infrallm.NewVisionGateway(cfg)
@@ -261,6 +302,7 @@ func (a *App) domainReady(ctx context.Context) error {
 		TopicStore:   topicStore,
 		Identity:     identityGraph,
 		LLMSync:      llmSync,
+		LLMWithTools: llmWithTools,
 		VisionLLM:    visLLM,
 		Scheduler:    schedulerInst,
 	})
