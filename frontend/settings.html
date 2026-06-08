@@ -14,13 +14,15 @@
 <div id="fatal-error" style="display:none;padding:40px;font-family:monospace;color:red;white-space:pre-wrap;"></div>
 <script>
 window.onerror = function(msg, url, line, col, err) {
+  if (String(msg).includes('ResizeObserver')) return true
   var el = document.getElementById('fatal-error')
   if (el) {
     el.style.display = 'block'
     el.textContent = 'Fatal: ' + msg + '\\n' + (err && err.stack ? err.stack : '') + '\\nat ' + url + ':' + line
   }
+  return false
 }
 </script>
-<script src="./src/main-settings.tsx" type="module"></script>
+<script src="./src/main-settings.ts" type="module"></script>
 </body>
 </html>

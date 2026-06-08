@@ -1,4 +1,12 @@
-// PIXI loaded as UMD script before app bundle. pixi-live2d-display attaches to window.PIXI.live2d.
+/// <reference types="vite/client" />
+
+declare module '*.vue' {
+  import type { DefineComponent } from 'vue'
+  const component: DefineComponent<{}, {}, any>
+  export default component
+}
+
+// PIXI loaded as UMD script before app bundle
 import type * as PIXI_NS from 'pixi.js'
 
 declare global {

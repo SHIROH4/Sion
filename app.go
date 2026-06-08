@@ -115,6 +115,16 @@ func (a *App) domainReady(ctx context.Context) error {
 	embSvc := svcmemory.NewEmbeddingService(ollamaURL, embModel)
 
 	sessionBuf := svcmemory.NewSessionBuffer(20)
+
+	// Backfill L0 working memory from persisted chat history on startup
+	// so session context survives process restarts.
+	if history, err := store.LoadHistory(20); err == nil && len(history) > 0 {
+		for _, m := range history {
+			sessionBuf.Append(m)
+		}
+		fmt.Printf("[startup] L0 session: restored %d messages from DB\n", len(history))
+	}
+
 	a.sessionBuf = sessionBuf
 	diaryRepo := infrastorage.NewDiaryRepo(db)
 	a.diaryRepo = diaryRepo

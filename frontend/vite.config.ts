@@ -1,12 +1,9 @@
 import { defineConfig } from 'vitest/config'
-import react from '@vitejs/plugin-react'
+import vue from '@vitejs/plugin-vue'
 import { resolve } from 'path'
 
-declare let process: { env: Record<string, string | undefined> };
-const isTest = process.env.VITEST !== undefined
-
 export default defineConfig({
-  plugins: [!isTest && react()].filter(Boolean),
+  plugins: [vue()],
   build: {
     rollupOptions: {
       input: {
@@ -18,6 +15,5 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'jsdom',
-    setupFiles: './src/test-setup.ts',
   },
 })
