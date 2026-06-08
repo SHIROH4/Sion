@@ -72,13 +72,14 @@ main.go 入口
 4. 构建基础设施层 (Store, EmbeddingService)
 5. 构建服务层:
    - SessionBuffer (L0, 20 轮环形缓冲)
-   - ← 新增 v0.3: 从 chat_history LoadHistory(20) 回填
+   - ← v0.3: 从 chat_history LoadHistory(20) 回填
    - DiaryStore, SelfModel, MemoryLayer
    - EmotionModel (加载持久化的情绪状态)
    - CareEngine, NeedModel
-   - FeatureComputer, Motivator, Learner
-   - DecisionEngine, StrategicAgent
-   - CuriosityEngine
+   - FeatureComputer
+   - DecisionEngine, MetaReasoner, S1RuleEngine ← v0.4
+   - UnifiedFeedbackProcessor, ImmediateCorrector ← v0.4
+   - StrategicAgent, CuriosityEngine
 6. 注册插件 (ChatPlugin, MemoryPlugin, SearchPlugin, VisionPlugin)
 7. 启动插件 (Awake → Start)
    - MemoryPlugin.Start() 启动 BackgroundLoop
@@ -94,8 +95,7 @@ app.domainReady()
       → 每 tick: runTick()
         → FeatureComputer.ComputeFull()
         → ComputeDrives()
-        → Motivator.ScoreActions()
-        → RouteToLLM() / 直接执行
+        → MetaReasoner.Route() → S1RuleEngine / S2Lite / S2Full / None
 ```
 
 ## 1.4 可优化点
@@ -454,9 +454,13 @@ func interactionGate(acceptRate float64) float64 {
 
 ---
 
-# 5. 动作打分模块 (Motivator)
+# 5. 动作打分模块 (Motivator) — v0.3, 已弃用
 
-## 5.1 设计思路
+> ⚠️ v0.4 中 ScoreActions + contextModulator 已被 S1RuleEngine + MetaReasoner 替代。
+> 权重矩阵保留作为冷启动默认值，但不再被 Learner 自学习修改。
+> 以下为 v0.3 的设计文档，仅作历史参考。
+
+## 5.1 设计思路 (历史)
 
 将 5 维驱力映射到 16 个具体动作上，选最优。纯数学计算——点积 + 倍率调制 + clamp。
 
@@ -1306,42 +1310,30 @@ BackgroundLoop.loop():
        - Proactive learning
 ```
 
-## 12.2 完整决策管线
+## 12.2 v0.4 决策管线
 
 ```
 runSystem2Decision():
-  Step 1: 组装决策上下文 (time, emotion, screen, patterns, strategies, outcomes)
+  Step 1: 组装决策上下文
   Step 2: NeedModel.Grow() + Modulation() → 推入 EmotionModel
   Step 3: FeatureComputer.ComputeFull() → 46 维特征
   Step 4: ComputeDrives(feats, needs) → 5 维驱力
-  Step 5: Motivator.ScoreActions(drives, feats, careSuggestions) → 16 动作得分
-  Step 6: RouteToLLM() 判断 → System 1 或 System 2
-  Step 7: 执行动作 (ToolRegistry 或 SpeakTool)
-  Step 8: RecordDrive() → 存入 Learner
-  Step 9: outgoingHandler() → 发送回复
+  Step 5: 安全门控 (硬规则: 连续未回复/晚安/配额)
+  Step 6: ImmediateCorrector 检查 → 过滤被即时抑制的动作
+  Step 7: S1RuleEngine.Decide() → 策略规则匹配
+  Step 8: MetaReasoner.Route() → PathNone/S1/S2Lite/S2Full
+  Step 9: switch route:
+    PathS1     → 规则直接执行 (0 token)
+    PathS2Lite → DecisionEngine.DecideLite() (~200t)
+    PathS2Full → DecisionEngine.DecideFull() (~370t)
+  Step 10: 执行动作 (ToolRegistry 或 SpeakTool)
 ```
 
-## 12.3 RouteToLLM — 8 个触发条件
+## 12.3 v0.3 RouteToLLM (历史参考, 已弃用)
 
-```
-System 1 (Fast Path, ~90%):
-  得分差距 > 0.03 且无极端条件 → 直接选最高分动作
+> v0.4 中 8 个硬编码条件被 MetaReasoner 的四维动态评估替代。
 
-System 2 (LLM Fallback, ~10%):
-  任一触发:
-  ① Sleepiness > 0.85        — 太困了，需要 LLM 判断是否该休息
-  ② anger/fear + intensity > 0.8 — 主人情绪极端
-  ③ 连续同动作 ≥ 3 次        — 陷入重复循环
-  ④ 连续拒绝 ≥ 3 次          — 需要改变策略
-  ⑤ accept < 0.3 + 样本 ≥ 10 + 趋势 < -0.15 — 接受率崩溃
-  ⑥ 高 need + 低 rejection + 不工作 + 选了 none — 应该行动但没行动
-  ⑦ valence trend < -0.5     — 情绪快速恶化
-  ⑧ > 4h idle + 首次重连     — 长时间静默后的首次重新接触
-```
-
-**为什么差距阈值是 0.03？**
-
-经验参数。如果两个动作得分差 < 0.03，说明有几个差不多好的选项，应该让 LLM 用"创造力"选择。如果差距很大（> 0.03），最优动作很明确，不需要 LLM。
+v0.3 的 System 1 / System 2 分流基于固定条件而非动态评估。v0.4 的改进在于能根据复杂度、风险、策略覆盖度动态选择路径，不再依赖硬编码阈值。
 
 ## 12.4 DecisionEngine 指数退避
 
@@ -1359,11 +1351,15 @@ ShouldRun():
 
 如果 LLM 连续决策 "none"（不行动），说明当前不适合打扰。指数退避避免反复调用 LLM 做同样的 "不行动" 决策，浪费 API 费用。任何用户互动重置 idleCount。
 
-## 12.5 可优化点
+## 12.5 v0.4 已解决问题 + 剩余可优化点
 
-- **System 1/2 分流是硬阈值**: 0.03 的差距阈值对所有场景一视同仁。可以考虑根据时段/用户状态动态调整阈值
+✅ **已在 v0.4 解决**:
+- System 1/2 分流 → MetaReasoner 四维动态评估替代硬编码 8 条件
+- runSystem2Decision 350+ 行 → 决策段缩减到 ~70 行，核心逻辑分散到独立模块
+
+⚠️ **剩余可优化点**:
 - **退避封顶 4 步**: 最大间隔 ~6.75h。如果用户一整天没互动，可能应该延长到 12h+
-- **runSystem2Decision 函数 350+ 行**: 逻辑密集，难以测试。应该拆分为更小的可测试单元
+- **冷启动时所有决策走 S2**: 没有策略规则时 MetaReasoner 将所有决策路由到 LLM。应保留默认权重矩阵作为 S1 的冷启动兜底
 
 ---
 
