@@ -454,118 +454,6 @@ func interactionGate(acceptRate float64) float64 {
 
 ---
 
-# 5. 动作打分模块 (Motivator) — v0.3, 已弃用
-
-> ⚠️ v0.4 中 ScoreActions + contextModulator 已被 S1RuleEngine + MetaReasoner 替代。
-> 权重矩阵保留作为冷启动默认值，但不再被 Learner 自学习修改。
-> 以下为 v0.3 的设计文档，仅作历史参考。
-
-## 5.1 设计思路 (历史)
-
-将 5 维驱力映射到 16 个具体动作上，选最优。纯数学计算——点积 + 倍率调制 + clamp。
-
-```
-Drive(social=0.7, care=0.3, curious=0.2, quiet=0.1, explore=0.1)
-  × Weight Matrix (16×5)
-  + CareEngine bonus
-  × contextModulator (8 factors)
-  = 16 final scores → max → selected action
-```
-
-## 5.2 16 动作权重矩阵
-
-**文件**: `internal/service/cognition/actions.go` — `BuildWeightsMap()`
-
-| Action | Social | Care | Curious | Quiet | Explore | NightSafe | Category |
-|--------|--------|------|---------|-------|---------|-----------|----------|
-| speak_casual | 0.80 | 0.15 | 0.05 | -0.30 | 0.00 | no | social |
-| speak_care | 0.40 | 0.70 | 0.00 | -0.20 | 0.00 | no | social |
-| speak_inquiry | 0.40 | 0.00 | 0.60 | 0.00 | 0.10 | no | social |
-| care_rest | 0.10 | 0.75 | 0.00 | 0.00 | 0.00 | yes | care |
-| care_meal | 0.10 | 0.70 | 0.00 | 0.00 | 0.00 | no | care |
-| care_hydration | 0.05 | 0.65 | 0.00 | 0.00 | 0.00 | yes | care |
-| care_health | 0.05 | 0.65 | 0.00 | 0.00 | 0.00 | yes | care |
-| care_encourage | 0.20 | 0.55 | 0.00 | 0.00 | 0.00 | no | care |
-| care_social | 0.30 | 0.40 | 0.00 | 0.00 | 0.00 | no | care |
-| search | 0.05 | 0.05 | 0.45 | -0.10 | 0.30 | yes | learning |
-| observe | 0.10 | 0.00 | 0.30 | 0.00 | 0.60 | yes | learning |
-| reflect | 0.00 | 0.00 | 0.00 | 0.20 | 0.75 | yes | learning |
-| analyze_patterns | 0.00 | 0.00 | 0.20 | 0.00 | 0.65 | yes | learning |
-| none | 0.00 | 0.00 | 0.00 | 1.00 | 0.00 | yes | none |
-
-**NightSafe 标记**：深夜 (22:00-08:00) 只允许 NightSafe=yes 的动作，防止打扰主人休息。
-
-## 5.3 得分计算
-
-```go
-// 1. 基础点积得分
-baseScore = social × w.Social
-          + care × w.Care
-          + curious × w.Curious
-          + quiet × w.Quiet
-          + explore × w.Explore
-
-// 2. CareEngine 建议加成
-if suggestion exists for this action:
-    baseScore += (0.30 - priority × 0.05)
-    // priority 1 → +0.25, priority 4 → +0.10
-
-// 3. 上下文调制倍率
-finalScore = baseScore × contextModulator(action, feats)
-```
-
-## 5.4 contextModulator — 8 个调制因子
-
-**文件**: `internal/service/cognition/motivator.go`
-
-```go
-func contextModulator(action, feats):
-    m := 1.0
-
-    // 1. 历史成功率 (A7)
-    //    rate=0 → ×0.4, rate=1 → ×1.0
-    m *= 0.4 + rate × 0.6
-
-    // 2. 来源接受率 (R3)
-    //    rate=0 → ×0.5, rate=1 → ×1.0
-    m *= 0.5 + rate × 0.5
-
-    // 3. 时间窗口偏好 (U10) — 仅 social 类
-    m *= 0.4 + U10 × 0.6
-
-    // 4. 用户投入度 (U8) — 仅 casual/care
-    m *= 0.6 + U8 × 0.4
-
-    // 5. 对话深度趋势 (R6) — inquiry 加分
-    if R6 > 0.2: m *= 1.0 + R6 × 0.3  (max ×1.3)
-
-    // 6. 活跃探索目标 (A11) — inquiry 加分
-    m *= 1.0 + saturate(A11, 3) × 0.3
-
-    // 7. 用户疏远 (U7) — social 降权
-    if U7 < -0.3: m *= 1.0 + U7 × 0.4  (min ×0.6)
-
-    // 8. search 专属调制
-    m *= 1.0 + saturate(A11,5) × 0.3    // 有目标→加分
-    m *= 1.0 + saturate(A12,5) × 0.2    // 有缺口→加分
-    m *= 1.0 + A13 × 0.1                // 学习势头
-    m *= 0.3 + E3 × 0.7                  // 冷却→降权
-    if E4 < 3: m *= 0.3                   // 配额保护
-    if U3 > 0.5: m *= 1.0 + U3 × 0.15    // 写代码→加分
-    
-    return clamp(m, 0.1, 1.5)
-```
-
-**设计思想**：contextModulator 实现了"从历史中学习"的轻量版——如果某个动作过去成功率低，现在自动降权。不需要等 Learner 的 batch 更新就能即时生效。倍率被严格夹在 [0.1, 1.5]，避免任何单一因素产生过激 swing。
-
-## 5.5 可优化点
-
-- **权重矩阵初始化是手动设定的**: 可以通过 A/B 测试或用户研究来校准初始权重
-- **CareEngine 建议加成是线性衰减**: `(0.30 - priority × 0.05)` — 可以考虑非线性衰减，让 priority 1（紧急）获得更大的分辨度
-- **contextModulator 因子之间可能有交叉**: 比如"历史成功率"和"来源接受率"可能高度相关。但当前设计是独立乘法叠加，可能放大或缩小效果
-
----
-
 # 5. v0.4 决策层重构
 
 > **设计参考论文**: SOFAI (IBM/Oxford, CACM 2025), RaDAgent (Tsinghua, ICLR 2025), Agent-R (2025), CogniWeb (BUPT, 2025)
@@ -1160,60 +1048,7 @@ similar := feedbackProcessor.SimilarExperiences(feats, 3)
 // → 注入到 LLM prompt: "上次类似场景下 speak_casual 被无视"
 ```
 
-## 11.5 旧版 Learner (v0.3, 已移除)
-
-### 设计思路 (历史参考)
-
-### 设计思路
-
-**参考**: DPO (Direct Preference Optimization, Rafailov et al. 2023) 的简化版——不需要显式奖励模型，直接从 accepted/rejected 反馈中更新动作权重。
-
-```go
-Δw = step × reward × drive
-step = 0.003
-reward ∈ {+1 (accepted), 0 (ignored), -1 (rejected)}
-```
-
-**文件**: `internal/service/cognition/learner.go` + `motivator.go`
-
-```go
-func UpdateWeightsFromOutcome(action, reward, social, care, curious, quiet, explore):
-    if action == "none": return
-    step := 0.003 × reward
-    
-    UpdateWeight(action, "social",  step × social)
-    UpdateWeight(action, "care",    step × care)
-    UpdateWeight(action, "curious", step × curious)
-    UpdateWeight(action, "quiet",   step × quiet)
-    UpdateWeight(action, "explore", step × explore)
-```
-
-**为什么 step = 0.003？**
-
-单次交互对权重的影响很小。以 social=0.7 为例：
-- 被接受: Δw = 0.003 × 1.0 × 0.7 = 0.0021（+0.2%）
-- 被拒绝: Δw = 0.003 × (-1.0) × 0.7 = -0.0021（-0.2%）
-
-假设每天 20 次主动行动，全部被接受 → 一天权重变化约 +4%，一个月约 +120%。这个速率避免了短期波动，倾向于长期趋势。
-
-**为什么忽略 reward=0 的样本？**
-
-"没回应"不一定意味着"不喜欢"——用户可能只是在忙。把 ignored 当成 rejected 会导致过度抑制。这是 DPO 论文的核心洞察：只从明确偏好信号学习。
-
-### BatchLearn
-
-```go
-ShouldLearn():
-  return timeSinceLastLearn > 6h AND len(storedDrives) >= 5
-
-BatchLearn():
-  for each record where reward != 0:
-    UpdateWeightsFromOutcome(record)
-  truncate to last 50 records
-  motivator.Save()
-```
-
-## 11.2 StrategicAgent — 策略蒸馏
+## 11.5 StrategicAgent — 策略蒸馏
 
 ### 设计思路
 
@@ -1250,7 +1085,7 @@ ShouldRun(): timeSinceLastRun > 6h AND 系统 idle > 30min
      - 现有更好 → 跳过
 ```
 
-## 11.3 Curiosity Engine
+## 11.6 Curiosity Engine
 
 ### 设计思路
 
@@ -1281,7 +1116,7 @@ ScanGaps() (每 2h + 每 10 个 tick):
    - quality gate: overall ≥ 0.5 才存入
 ```
 
-## 11.4 可优化点
+## 11.7 可优化点
 
 - **Learner 的 step=0.003 是全动作统一的**: 不同类型的动作可能需要不同的学习率。social 动作（用户情感反馈强烈）可以用更大的 step
 - **策略蒸馏的 prompt 包含很多内容**: 可能超过 DeepSeek 的稳定处理范围。应该做 prompt 长度监控，必要时压缩最近结果
@@ -1329,13 +1164,7 @@ runSystem2Decision():
   Step 10: 执行动作 (ToolRegistry 或 SpeakTool)
 ```
 
-## 12.3 v0.3 RouteToLLM (历史参考, 已弃用)
-
-> v0.4 中 8 个硬编码条件被 MetaReasoner 的四维动态评估替代。
-
-v0.3 的 System 1 / System 2 分流基于固定条件而非动态评估。v0.4 的改进在于能根据复杂度、风险、策略覆盖度动态选择路径，不再依赖硬编码阈值。
-
-## 12.4 DecisionEngine 指数退避
+## 12.3 DecisionEngine 指数退避
 
 ```go
 ShouldRun():
@@ -1351,7 +1180,7 @@ ShouldRun():
 
 如果 LLM 连续决策 "none"（不行动），说明当前不适合打扰。指数退避避免反复调用 LLM 做同样的 "不行动" 决策，浪费 API 费用。任何用户互动重置 idleCount。
 
-## 12.5 v0.4 已解决问题 + 剩余可优化点
+## 12.4 v0.4 已解决问题 + 剩余可优化点
 
 ✅ **已在 v0.4 解决**:
 - System 1/2 分流 → MetaReasoner 四维动态评估替代硬编码 8 条件
@@ -1555,7 +1384,7 @@ L2 (SQLite):
 每个子系统独立 mutex — 无全局锁:
 
 - MemoryPlugin.mu: 保护 running 状态 + chat 取消
-- Motivator.mu (RWMutex): 权重矩阵读写
+- S1RuleEngine.mu (RWMutex): 策略规则读写
 - FeatureComputer.mu (RWMutex): 情绪历史环形缓冲
 - Manager.mu (RWMutex): 插件注册表
 ```
